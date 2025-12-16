@@ -1,0 +1,386 @@
+import React, { useState, useMemo } from 'react';
+import { Plus, Edit2, Trash2, CheckCircle, Eye, Upload, FileText, XCircle, AlertTriangle, AlertOctagon, Calendar, FolderSearch, ShieldCheck, Search, Filter, User, Image as ImageIcon } from 'lucide-react';
+import { Infraction, Partenaire, Rapport, InfractionFile, Invariant, UserRole } from '../types';
+import { mockConducteurs } from '../services/mockData';
+import { Modal } from '../components/ui/Modal';
+import { FormInput, FormSelect } from '../components/ui/FormElements';
+import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
+
+interface InfractionsProps {
+    selectedPartnerId: string;
+    partners: Partenaire[];
+    reports: Rapport[];
+    invariants: Invariant[];
+    infractionsData: Infraction[];
+    setInfractionsData: React.Dispatch<React.SetStateAction<Infraction[]>>;
+    onViewFiles: (infractionId: string) => void;
+    userRole: UserRole;
+}
+
+export const Infractions = ({ selectedPartnerId, partners, reports, invariants, infractionsData, setInfractionsData, onViewFiles, userRole }: InfractionsProps) => {
+    const infractions = infractionsData;
+    const setInfractions = setInfractionsData;
+    
+    // États d'interface & Filtres
+    const [viewMode, setViewMode] = useState<ViewMode>('list');
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const [viewingFile, setViewingFile] = useState<string | null>(null);
+
+    // État Suppression
+    const [deleteAction, setDeleteAction] = useState<{ type: 'single', id?: string } | null>(null);
+
+    const [searchText, setSearchText] = useState('');
+    const [monthFilter, setMonthFilter] = useState<string>('');
+    const [typeFilter, setTypeFilter] = useState<string>(''); 
+
+    const [formData, setFormData] = useState<Partial<Infraction>>({ 
+        date: new Date().toISOString().split('T')[0],
+        type_infraction: 'Alerte',
+        nombre: 1, 
+        mesure_disciplinaire: 'Avertissement', 
+        autres_mesures_disciplinaire: '',
+        suivi: false, 
+        date_suivi: '',
+        amelioration: false,
+        partenaire_id: '', 
+        rapports_id: '',
+        files: []
+    });
+
+    const isReadOnly = userRole === 'directeur';
+
+    const months = [
+        "Janvier", "Février", "Mars", "Avril", "Mai", "Juin", 
+        "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"
+    ];
+
+    // --- Helpers d'affichage ---
+    const getConducteurName = (rapportId: string) => {
+        const report = reports.find(r => r.id === rapportId);
+        if (!report) return 'Conducteur Inconnu';
+        const driver = mockConducteurs.find(c => c.id === report.conducteur_id);
+        return driver ? `${driver.nom} ${driver.prenom}` : 'Inconnu';
+    };
+
+    const getInvariantTitle = (rapportId: string) => {
+        const report = reports.find(r => r.id === rapportId);
+        if (!report || !report.invariant_id) return '-';
+        const invariant = invariants.find(inv => inv.id === report.invariant_id);
+        return invariant ? invariant.titre : '-';
+    };
+
+    // --- Filtrage ---
+    const filteredInfractions = useMemo(() => {
+        return infractions.filter(inf => {
+            if (selectedPartnerId !== 'all' && inf.partenaire_id !== selectedPartnerId) return false;
+            if (monthFilter !== '') {
+                const d = new Date(inf.date);
+                if (d.getMonth().toString() !== monthFilter) return false;
+            }
+            if (typeFilter && inf.type_infraction !== typeFilter) return false;
+            if (searchText) {
+                const lowerSearch = searchText.toLowerCase();
+                const driver = getConducteurName(inf.rapports_id).toLowerCase();
+                const invariant = getInvariantTitle(inf.rapports_id).toLowerCase();
+                const mesure = inf.mesure_disciplinaire.toLowerCase();
+                return driver.includes(lowerSearch) || invariant.includes(lowerSearch) || mesure.includes(lowerSearch);
+            }
+            return true;
+        });
+    }, [infractions, selectedPartnerId, monthFilter, typeFilter, searchText, reports, invariants]);
+
+    // --- Actions CRUD ---
+    const handleSave = () => {
+        if (!formData.partenaire_id) return;
+        setInfractions(prev => {
+             const newItem = { id: editingId || `inf_${Date.now()}`, ...formData } as Infraction;
+             return editingId ? prev.map(i => i.id === editingId ? newItem : i) : [...prev, newItem];
+        });
+        setIsModalOpen(false);
+    };
+
+    // --- Suppression ---
+    const requestDelete = (id: string, e?: React.MouseEvent) => {
+        if(e) e.stopPropagation();
+        setDeleteAction({ type: 'single', id });
+    };
+
+    const confirmDelete = () => {
+        if (!deleteAction || !deleteAction.id) return;
+        setInfractions(prev => prev.filter(i => i.id !== deleteAction.id));
+        setDeleteAction(null);
+    };
+
+    const handleOpenModal = (inf?: Infraction) => {
+        if(inf) { setEditingId(inf.id); setFormData(inf); } 
+        else { setEditingId(null); setFormData({ date: new Date().toISOString().split('T')[0], type_infraction: 'Alerte', nombre: 1, mesure_disciplinaire: 'Avertissement', autres_mesures_disciplinaire: '', suivi: false, amelioration: false, date_suivi: '', partenaire_id: selectedPartnerId !== 'all' ? selectedPartnerId : '', rapports_id: '', files: [] }); }
+        setIsModalOpen(true);
+    };
+
+    const filteredReportsForForm = reports.filter(r => r.partenaire_id === formData.partenaire_id);
+
+    return (
+        <div className="space-y-6 animate-fade-in w-full pb-8">
+             {/* --- Barre d'outils / Filtres --- */}
+             <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700">
+                <div className="flex flex-col md:flex-row gap-3 flex-1">
+                    <div className="relative w-full md:w-64">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                        <input type="text" placeholder="Rechercher..." className="pl-10 pr-4 py-2.5 w-full bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all" value={searchText} onChange={(e) => setSearchText(e.target.value)} />
+                    </div>
+                    <div className="flex gap-3 overflow-x-auto pb-1 md:pb-0">
+                        <div className="relative min-w-[140px]">
+                            <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="w-full appearance-none pl-10 pr-8 py-2.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer font-medium">
+                                <option value="">Tous les mois</option>
+                                {months.map((m, index) => (<option key={index} value={index}>{m}</option>))}
+                            </select>
+                            <Calendar size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                        </div>
+                        <div className="relative min-w-[140px]">
+                            <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-full appearance-none pl-10 pr-8 py-2.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer font-medium">
+                                <option value="">Tous types</option>
+                                <option value="Alerte">Alerte</option>
+                                <option value="Alarme">Alarme</option>
+                            </select>
+                            <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                        </div>
+                    </div>
+                </div>
+                <div className="flex gap-3 items-center">
+                    <ViewModeToggle mode={viewMode} setMode={setViewMode} />
+                    {!isReadOnly && (
+                        <button onClick={() => handleOpenModal()} disabled={selectedPartnerId === 'all'} className={`bg-blue-600 text-white px-4 py-2.5 rounded-xl font-semibold transition-all flex items-center gap-2 shadow-lg shadow-blue-900/20 active:scale-95 ${selectedPartnerId === 'all' ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'}`}><Plus size={18} strokeWidth={2.5} /> <span className="hidden sm:inline">Nouvelle Infraction</span></button>
+                    )}
+                </div>
+            </div>
+
+            {/* --- VUE GRILLE (Mode Carte) --- */}
+            {viewMode === 'grid' ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                    {filteredInfractions.map(inf => {
+                        const invariantTitle = getInvariantTitle(inf.rapports_id);
+                        const driverName = getConducteurName(inf.rapports_id);
+                        const isAlarme = inf.type_infraction === 'Alarme';
+                        
+                        return (
+                            <div key={inf.id} className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm hover:shadow-lg transition-all group flex flex-col relative overflow-hidden">
+                                <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${isAlarme ? 'bg-red-500' : 'bg-orange-400'}`}></div>
+                                <div className="p-5 pl-7 flex-1">
+                                    <div className="flex justify-between items-start mb-3">
+                                        <span className="text-xs text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1 bg-slate-100 dark:bg-slate-700/50 px-2 py-1 rounded-lg">
+                                            <Calendar size={12} /> {new Date(inf.date).toLocaleDateString()}
+                                        </span>
+                                        <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border ${isAlarme ? 'bg-red-50 border-red-200 text-red-700 dark:bg-red-900/20 dark:border-red-800 dark:text-red-400' : 'bg-orange-50 border-orange-200 text-orange-700 dark:bg-orange-900/20 dark:border-orange-800 dark:text-orange-400'}`}>
+                                            {isAlarme ? <AlertOctagon size={10} /> : <AlertTriangle size={10} />}
+                                            {inf.type_infraction}
+                                        </span>
+                                    </div>
+                                    <div className="mb-4">
+                                        <div className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2 mb-1">
+                                            <User size={16} className="text-blue-500" />
+                                            <span className="truncate">{driverName}</span>
+                                        </div>
+                                        <div className="text-xs text-slate-500 dark:text-slate-400 italic line-clamp-2 pl-6">
+                                            {invariantTitle !== '-' ? invariantTitle : "Motif non spécifié"}
+                                        </div>
+                                    </div>
+                                    <div className="bg-slate-50 dark:bg-slate-900/50 -mx-5 -mb-5 px-5 py-3 mt-auto border-t border-slate-100 dark:border-slate-700/50">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-xs font-semibold text-slate-600 dark:text-slate-300 truncate max-w-[120px]" title={inf.mesure_disciplinaire}>
+                                                {inf.mesure_disciplinaire}
+                                            </span>
+                                            {inf.nombre > 1 && <span className="text-[10px] bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 rounded text-slate-600">x{inf.nombre}</span>}
+                                        </div>
+                                        <div className="flex justify-between items-center gap-2">
+                                            <div className={`flex items-center gap-1 text-xs ${inf.suivi ? 'text-green-600 dark:text-green-400 font-bold' : 'text-slate-400'}`}>
+                                                {inf.suivi ? <CheckCircle size={12} /> : <XCircle size={12} />}
+                                                {inf.suivi ? 'Suivi OK' : 'À traiter'}
+                                            </div>
+                                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <button onClick={() => onViewFiles(inf.id)} className="p-1.5 bg-white dark:bg-slate-700 text-blue-600 rounded shadow-sm hover:bg-blue-50"><FolderSearch size={14} /></button>
+                                                {!isReadOnly && (
+                                                    <>
+                                                        <button onClick={() => handleOpenModal(inf)} className="p-1.5 bg-white dark:bg-slate-700 text-slate-500 rounded shadow-sm hover:text-blue-600"><Edit2 size={14} /></button>
+                                                        <button onClick={(e) => requestDelete(inf.id, e)} className="p-1.5 bg-white dark:bg-slate-700 text-red-500 rounded shadow-sm hover:bg-red-50"><Trash2 size={14} /></button>
+                                                    </>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            ) : (
+                <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm whitespace-nowrap">
+                            <thead className="bg-slate-50 dark:bg-slate-900/50 text-slate-500 dark:text-slate-400 font-semibold border-b border-slate-200 dark:border-slate-700">
+                                <tr>
+                                    <th className="px-6 py-4">Date</th>
+                                    <th className="px-6 py-4">Conducteur</th>
+                                    <th className="px-6 py-4">Type</th>
+                                    <th className="px-6 py-4">Motif (Invariant)</th>
+                                    <th className="px-6 py-4">Sanction (Mesure)</th>
+                                    <th className="px-6 py-4">Autres mesures</th>
+                                    <th className="px-6 py-4 text-center">Suivi</th>
+                                    <th className="px-6 py-4 text-center">Docs</th>
+                                    <th className="px-6 py-4 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+                                {filteredInfractions.map(inf => {
+                                    const invariantTitle = getInvariantTitle(inf.rapports_id);
+                                    const driverName = getConducteurName(inf.rapports_id);
+                                    const isAlarme = inf.type_infraction === 'Alarme';
+                                    return (
+                                    <tr key={inf.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors group">
+                                        <td className="px-6 py-4 text-slate-700 dark:text-slate-300 font-medium">{new Date(inf.date).toLocaleDateString()}</td>
+                                        <td className="px-6 py-4">
+                                            <div className="flex items-center gap-2 font-medium text-slate-800 dark:text-white">
+                                                <User size={14} className="text-slate-400" />
+                                                {driverName}
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold border ${isAlarme ? 'bg-red-50 border-red-200 text-red-700 dark:bg-red-900/20 dark:border-red-800 dark:text-red-400' : 'bg-orange-50 border-orange-200 text-orange-700 dark:bg-orange-900/20 dark:border-orange-800 dark:text-orange-400'}`}>
+                                                {isAlarme ? <AlertOctagon size={12} /> : <AlertTriangle size={12} />}
+                                                {inf.type_infraction}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                            <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300 max-w-[200px] truncate" title={invariantTitle}>
+                                                <ShieldCheck size={14} className="text-blue-400 shrink-0" />
+                                                {invariantTitle}
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4 font-medium text-slate-700 dark:text-slate-300">{inf.mesure_disciplinaire}</td>
+                                        <td className="px-6 py-4 text-slate-500 italic max-w-[150px] truncate" title={inf.autres_mesures_disciplinaire}>{inf.autres_mesures_disciplinaire || '-'}</td>
+                                        <td className="px-6 py-4 text-center">
+                                            <div className="flex flex-col items-center">
+                                                {inf.suivi ? (
+                                                    <span className="flex items-center gap-1 text-green-600 dark:text-green-400 text-xs font-bold"><CheckCircle size={14} /> {inf.date_suivi ? new Date(inf.date_suivi).toLocaleDateString() : 'Oui'}</span>
+                                                ) : (
+                                                    <span className="flex items-center gap-1 text-slate-400 text-xs"><XCircle size={14} /> Non</span>
+                                                )}
+                                                {inf.amelioration && <span className="text-[10px] text-blue-500 mt-0.5">Amélioré</span>}
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4 text-center">
+                                            {inf.files && inf.files.length > 0 ? (
+                                                <button onClick={() => onViewFiles(inf.id)} className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 text-xs font-bold hover:bg-blue-200 transition-colors">{inf.files.length}</button>
+                                            ) : <span className="text-slate-300">-</span>}
+                                        </td>
+                                        <td className="px-6 py-4 text-right">
+                                            <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <button onClick={() => onViewFiles(inf.id)} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 rounded-lg transition-colors" title="Dossier"><FolderSearch size={16} /></button>
+                                                {!isReadOnly && (
+                                                    <>
+                                                        <button onClick={() => handleOpenModal(inf)} className="p-2 text-slate-500 hover:text-blue-600 bg-slate-50 hover:bg-white dark:bg-slate-700/50 dark:hover:bg-slate-700 rounded-lg transition-colors"><Edit2 size={16} /></button>
+                                                        <button onClick={(e) => requestDelete(inf.id, e)} className="p-2 text-slate-500 hover:text-red-600 bg-slate-50 hover:bg-white dark:bg-slate-700/50 dark:hover:bg-slate-700 rounded-lg transition-colors"><Trash2 size={16} /></button>
+                                                    </>
+                                                )}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                )})}
+                                {filteredInfractions.length === 0 && <tr><td colSpan={9} className="px-6 py-12 text-center text-slate-500">Aucune infraction trouvée avec les filtres actuels.</td></tr>}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+            
+            {/* Modal Création / Edition */}
+            <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingId ? 'Modifier Infraction' : 'Nouvelle Infraction'} size="large" footer={<><button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg">Annuler</button>{!isReadOnly && <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-md">Enregistrer</button>}</>}>
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                     <div className="space-y-4">
+                        <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-100 dark:border-slate-700 pb-2">Détails de l'infraction</h4>
+                        <div className="grid grid-cols-2 gap-4">
+                             <FormInput label="Date constat" type="date" value={formData.date} onChange={(e:any) => setFormData({...formData, date: e.target.value})} disabled={isReadOnly} />
+                             <FormSelect label="Partenaire" value={formData.partenaire_id} onChange={(e:any) => setFormData({...formData, partenaire_id: e.target.value})} options={[{value: '', label: 'Sélectionner...'}, ...partners.map(p => ({value: p.id, label: p.nom}))]} disabled={selectedPartnerId !== 'all' || isReadOnly} />
+                        </div>
+                        <FormSelect label="Rapport Lié (Invariant)" value={formData.rapports_id} onChange={(e:any) => setFormData({...formData, rapports_id: e.target.value})} disabled={!formData.partenaire_id || isReadOnly} options={[{value: '', label: 'Sélectionner un rapport...'}, ...filteredReportsForForm.map(r => ({ value: r.id, label: `${new Date(r.date).toLocaleDateString()} - ${getConducteurName(r.id)} (${getInvariantTitle(r.id)})` }))]} />
+                        <div className="grid grid-cols-3 gap-4">
+                             <div className="col-span-2">
+                                <FormSelect label="Type d'infraction (Sévérité)" value={formData.type_infraction} onChange={(e:any) => setFormData({...formData, type_infraction: e.target.value})} options={[{ value: 'Alerte', label: 'Alerte' }, { value: 'Alarme', label: 'Alarme' }]} disabled={isReadOnly} />
+                             </div>
+                             <FormInput label="Nombre" type="number" min="1" value={formData.nombre} onChange={(e:any) => setFormData({...formData, nombre: parseInt(e.target.value) || 1})} disabled={isReadOnly} />
+                        </div>
+                     </div>
+                     <div className="space-y-6">
+                        <div className="space-y-4">
+                            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-100 dark:border-slate-700 pb-2">Mesures Disciplinaires</h4>
+                            <FormInput label="Mesure Principale" value={formData.mesure_disciplinaire} onChange={(e:any) => setFormData({...formData, mesure_disciplinaire: e.target.value})} placeholder="Ex: Avertissement" disabled={isReadOnly} />
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Autres mesures disciplinaire</label>
+                                <textarea className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white h-20 resize-none transition-all" value={formData.autres_mesures_disciplinaire || ''} onChange={(e) => setFormData({...formData,autres_mesures_disciplinaire: e.target.value})} placeholder="Ex: Formation complémentaire..." disabled={isReadOnly} />
+                            </div>
+                        </div>
+                        <div className="space-y-4">
+                            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider border-b border-slate-100 dark:border-slate-700 pb-2">Suivi & Résultats</h4>
+                            <div className="flex flex-wrap gap-6 p-4 bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-100 dark:border-slate-700">
+                                <div className="space-y-3">
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" checked={formData.suivi} onChange={(e) => setFormData({...formData, suivi: e.target.checked})} className="w-4 h-4 rounded text-blue-600 border-gray-300 focus:ring-blue-500" disabled={isReadOnly} />
+                                        <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Suivi effectué</span>
+                                    </label>
+                                    <label className="flex items-center gap-2 cursor-pointer">
+                                        <input type="checkbox" checked={formData.amelioration} onChange={(e) => setFormData({...formData, amelioration: e.target.checked})} className="w-4 h-4 rounded text-green-600 border-gray-300 focus:ring-green-500" disabled={isReadOnly} />
+                                        <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Amélioration constatée</span>
+                                    </label>
+                                </div>
+                                <div className="flex-1 min-w-[150px]">
+                                    <FormInput label="Date de suivi" type="date" value={formData.date_suivi || ''} onChange={(e:any) => setFormData({...formData, date_suivi: e.target.value})} disabled={!formData.suivi || isReadOnly} />
+                                </div>
+                            </div>
+                        </div>
+                     </div>
+                 </div>
+             </Modal>
+
+             {/* Modal de Confirmation de Suppression */}
+             <Modal
+                isOpen={!!deleteAction}
+                onClose={() => setDeleteAction(null)}
+                title="Confirmation"
+                size="default"
+                footer={
+                    <>
+                        <button onClick={() => setDeleteAction(null)} className="flex-1 px-4 py-2.5 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl font-semibold">Annuler</button>
+                        <button onClick={confirmDelete} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2">
+                            <Trash2 size={18} /> Confirmer
+                        </button>
+                    </>
+                }
+            >
+                <div className="flex flex-col items-center text-center p-6 space-y-4">
+                    <div className="p-4 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-full animate-bounce-short">
+                        <AlertTriangle size={48} strokeWidth={1.5} />
+                    </div>
+                    <div>
+                        <h3 className="text-lg font-bold text-slate-800 dark:text-white">Supprimer l'infraction ?</h3>
+                        <p className="text-slate-500 dark:text-slate-400 max-w-sm mx-auto mt-2">
+                            Cette action est irréversible.
+                        </p>
+                    </div>
+                </div>
+            </Modal>
+
+             <Modal isOpen={!!viewingFile} onClose={() => setViewingFile(null)} title="Visualisation Justificatif" size="large">
+                {viewingFile && (
+                    <div className="w-full h-full min-h-[500px] bg-slate-100 dark:bg-slate-900 rounded-lg overflow-hidden flex flex-col">
+                        <object data={viewingFile} type="application/pdf" className="w-full h-full flex-1">
+                             <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-4">
+                                <p>Aperçu non disponible pour ce type de fichier.</p>
+                                <a href={viewingFile} target="_blank" rel="noopener noreferrer" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Télécharger le fichier</a>
+                            </div>
+                        </object>
+                    </div>
+                )}
+            </Modal>
+        </div>
+    );
+};

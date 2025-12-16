@@ -1,0 +1,5 @@
+{
+  "name": "TPA",
+  "description": "Une application complète de gestion de flotte, de suivi des conducteurs et d'analyse de la sécurité routière basée sur les données télématiques.",
+  "requestFramePermissions": []
+}
