@@ -230,7 +230,14 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear, reports, infract
                 return [row.label, row.valeur, row.objectif, row.commentaire];
             } else {
                 const isOk = row.isInvariant ? row.valeur === 0 : true; 
-                return [row.label, row.valeur, row.objectif_annuel, isOk ? "OK" : "NOK", row.analyse_cause];
+                // Correction: Gestion des valeurs undefined pour satisfaire le typage TS de jspdf-autotable
+                return [
+                    row.label, 
+                    row.valeur, 
+                    row.objectif_annuel || '', 
+                    isOk ? "OK" : "NOK", 
+                    row.analyse_cause || ''
+                ];
             }
         });
 

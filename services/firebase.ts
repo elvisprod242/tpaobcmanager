@@ -1,7 +1,7 @@
 
-import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
-import { getAuth } from 'firebase/auth';
+import { initializeApp, FirebaseApp } from 'firebase/app';
+import { getFirestore, Firestore } from 'firebase/firestore';
+import { getAuth, Auth } from 'firebase/auth';
 
 // Configuration Firebase
 // Note: Vite remplace statiquement `import.meta.env.VITE_...` lors du build.
@@ -25,9 +25,9 @@ const firebaseConfig = {
   appId: getEnv("VITE_FIREBASE_APP_ID", "1:222695022322:web:0fb84d9fe8475b44cd3a6b")
 };
 
-let app;
-let db;
-let auth;
+let app: FirebaseApp | undefined;
+let db: Firestore | undefined;
+let auth: Auth | undefined;
 
 try {
     app = initializeApp(firebaseConfig);
