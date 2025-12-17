@@ -4,20 +4,22 @@ import { Plus, Edit2, Trash2, User, Search, MapPin, CreditCard, Key, CheckSquare
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Conducteur, CleObc, Partenaire, UserRole } from '../types';
-import { mockPartenairesList } from '../services/mockData';
 import { Modal } from '../components/ui/Modal';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
 import { FormInput, FormSelect } from '../components/ui/FormElements';
+import { useNotification } from '../contexts/NotificationContext';
 
 interface DriversProps {
     selectedPartnerId: string;
     drivers: Conducteur[];
     setDrivers: React.Dispatch<React.SetStateAction<Conducteur[]>>;
     obcKeys: CleObc[];
+    partners: Partenaire[];
     userRole: UserRole;
 }
 
-export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, userRole }: DriversProps) => {
+export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partners, userRole }: DriversProps) => {
+    const { addNotification } = useNotification();
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [formData, setFormData] = useState<Partial<Conducteur>>({ nom: '', prenom: '', numero_permis: '', categorie_permis: 'C', lieu_travail: '' });
@@ -38,12 +40,12 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, userR
         if (selectedPartnerId === 'all') {
             if (cleObcIds.length > 1) return 'Multi-partenaires';
             const key = obcKeys.find(k => k.id === cleObcIds[0]);
-            const partner = key ? mockPartenairesList.find(p => p.id === key.partenaire_id) : null;
+            const partner = key ? partners.find(p => p.id === key.partenaire_id) : null;
             return partner ? partner.nom : 'Partenaire Inconnu';
         }
 
         const key = obcKeys.find(k => cleObcIds.includes(k.id) && k.partenaire_id === selectedPartnerId);
-        const partner = key ? mockPartenairesList.find(p => p.id === key.partenaire_id) : null;
+        const partner = key ? partners.find(p => p.id === key.partenaire_id) : null;
         return partner ? partner.nom : 'Aucun partenaire lié';
     };
 
@@ -84,6 +86,7 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, userR
              
              return editingId ? prev.map(d => d.id === editingId ? newItem : d) : [...prev, newItem];
         });
+        addNotification('success', editingId ? 'Conducteur mis à jour.' : 'Conducteur ajouté.');
         setIsModalOpen(false);
     };
 
@@ -105,8 +108,10 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, userR
                 newSelected.delete(deleteAction.id);
                 setSelectedDrivers(newSelected);
             }
+            addNotification('success', 'Conducteur supprimé.');
         } else if (deleteAction.type === 'bulk') {
             setDrivers(prev => prev.filter(d => !selectedDrivers.has(d.id)));
+            addNotification('success', `${selectedDrivers.size} conducteurs supprimés.`);
             setSelectedDrivers(new Set());
         }
         setDeleteAction(null);
@@ -147,7 +152,7 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, userR
         
         doc.setFontSize(10);
         doc.setTextColor(100);
-        const partnerName = selectedPartnerId === 'all' ? 'Tous les partenaires' : mockPartenairesList.find(p => p.id === selectedPartnerId)?.nom;
+        const partnerName = selectedPartnerId === 'all' ? 'Tous les partenaires' : partners.find(p => p.id === selectedPartnerId)?.nom;
         const dateStr = new Date().toLocaleDateString('fr-FR');
         
         doc.text(`Partenaire: ${partnerName}`, 14, 28);
@@ -178,7 +183,7 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, userR
             styles: { fontSize: 9, cellPadding: 3, textColor: 50 },
             alternateRowStyles: { fillColor: [248, 250, 252] },
             didDrawPage: (data: any) => {
-                const pageCount = doc.internal.getNumberOfPages();
+                const pageCount = doc.getNumberOfPages();
                 doc.setFontSize(8);
                 doc.setTextColor(150);
                 doc.text(`Page ${pageCount}`, data.settings.margin.left, doc.internal.pageSize.height - 10);
@@ -186,6 +191,7 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, userR
         });
 
         doc.save(`Conducteurs_${new Date().toISOString().split('T')[0]}.pdf`);
+        addNotification('info', 'Le PDF a été généré avec succès.');
     };
 
     return (
@@ -242,7 +248,7 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, userR
             <div className="hidden print:block mb-6">
                 <h1 className="text-2xl font-bold text-black mb-2">Liste des Conducteurs</h1>
                 <div className="text-sm text-gray-600 flex justify-between border-b border-gray-300 pb-2 mb-4">
-                    <span>Partenaire : {selectedPartnerId === 'all' ? 'Tous' : mockPartenairesList.find(p => p.id === selectedPartnerId)?.nom}</span>
+                    <span>Partenaire : {selectedPartnerId === 'all' ? 'Tous' : partners.find(p => p.id === selectedPartnerId)?.nom}</span>
                     <span>Date : {new Date().toLocaleDateString('fr-FR')}</span>
                     <span>Total : {filteredDrivers.length} conducteur(s)</span>
                 </div>

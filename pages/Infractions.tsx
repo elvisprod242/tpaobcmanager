@@ -1,7 +1,7 @@
+
 import React, { useState, useMemo } from 'react';
 import { Plus, Edit2, Trash2, CheckCircle, Eye, Upload, FileText, XCircle, AlertTriangle, AlertOctagon, Calendar, FolderSearch, ShieldCheck, Search, Filter, User, Image as ImageIcon } from 'lucide-react';
-import { Infraction, Partenaire, Rapport, InfractionFile, Invariant, UserRole } from '../types';
-import { mockConducteurs } from '../services/mockData';
+import { Infraction, Partenaire, Rapport, InfractionFile, Invariant, UserRole, Conducteur } from '../types';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormSelect } from '../components/ui/FormElements';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
@@ -15,9 +15,10 @@ interface InfractionsProps {
     setInfractionsData: React.Dispatch<React.SetStateAction<Infraction[]>>;
     onViewFiles: (infractionId: string) => void;
     userRole: UserRole;
+    drivers: Conducteur[];
 }
 
-export const Infractions = ({ selectedPartnerId, partners, reports, invariants, infractionsData, setInfractionsData, onViewFiles, userRole }: InfractionsProps) => {
+export const Infractions = ({ selectedPartnerId, partners, reports, invariants, infractionsData, setInfractionsData, onViewFiles, userRole, drivers }: InfractionsProps) => {
     const infractions = infractionsData;
     const setInfractions = setInfractionsData;
     
@@ -59,7 +60,7 @@ export const Infractions = ({ selectedPartnerId, partners, reports, invariants, 
     const getConducteurName = (rapportId: string) => {
         const report = reports.find(r => r.id === rapportId);
         if (!report) return 'Conducteur Inconnu';
-        const driver = mockConducteurs.find(c => c.id === report.conducteur_id);
+        const driver = drivers.find(c => c.id === report.conducteur_id);
         return driver ? `${driver.nom} ${driver.prenom}` : 'Inconnu';
     };
 
@@ -88,7 +89,7 @@ export const Infractions = ({ selectedPartnerId, partners, reports, invariants, 
             }
             return true;
         });
-    }, [infractions, selectedPartnerId, monthFilter, typeFilter, searchText, reports, invariants]);
+    }, [infractions, selectedPartnerId, monthFilter, typeFilter, searchText, reports, invariants, drivers]);
 
     // --- Actions CRUD ---
     const handleSave = () => {

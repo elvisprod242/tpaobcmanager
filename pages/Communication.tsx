@@ -1,8 +1,6 @@
-
 import React, { useState, useMemo } from 'react';
 import { Search, Plus, Trash2, Edit2, MessageSquare, Calendar, User, BookOpen, CheckSquare, Square, Save, Eye, LayoutGrid, List, Clock, CheckCircle2, Hourglass, AlertTriangle } from 'lucide-react';
 import { CommunicationPlan, Partenaire, UserRole } from '../types';
-import { mockCommunicationPlans } from '../services/mockData';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormSelect } from '../components/ui/FormElements';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
@@ -10,14 +8,15 @@ import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
 interface CommunicationProps {
     selectedPartnerId: string;
     partners: Partenaire[];
+    plans: CommunicationPlan[];
+    setPlans: React.Dispatch<React.SetStateAction<CommunicationPlan[]>>;
     onViewDetails?: (planId: string) => void;
     userRole: UserRole;
 }
 
 type PlanStatus = 'ongoing' | 'upcoming' | 'completed' | 'unknown';
 
-export const Communication = ({ selectedPartnerId, partners, onViewDetails, userRole }: CommunicationProps) => {
-    const [plans, setPlans] = useState<CommunicationPlan[]>(mockCommunicationPlans);
+export const Communication = ({ selectedPartnerId, partners, plans, setPlans, onViewDetails, userRole }: CommunicationProps) => {
     const [filterText, setFilterText] = useState('');
     const [selectedPlans, setSelectedPlans] = useState<Set<string>>(new Set());
     const [viewMode, setViewMode] = useState<ViewMode>('grid');

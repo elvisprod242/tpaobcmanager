@@ -2,9 +2,9 @@
 import React, { useState, useMemo } from 'react';
 import { Truck, AlertTriangle, User, ChevronDown, Activity, Key, ShieldAlert, Award } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
-import { mockRapports, mockInfractions, mockConducteurs, mockInvariants, mockScpConfigurations, mockCleObcList, mockVehicules } from '../services/mockData';
 import { StatCard } from '../components/ui/StatCard';
 import { getInfractionSeverity } from '../utils/helpers';
+import { Partenaire, Conducteur, Vehicule, Rapport, Infraction, CleObc, Invariant, ScpConfiguration } from '../types';
 
 // Helper pour convertir HH:mm:ss en heures décimales
 const timeStringToHours = (timeStr: string): number => {
@@ -31,9 +31,17 @@ const CustomTooltip = ({ active, payload, label, unit = "" }: any) => {
 interface DashboardProps {
     selectedPartnerId: string;
     globalYear: string;
+    partners: Partenaire[];
+    drivers: Conducteur[];
+    vehicles: Vehicule[];
+    reports: Rapport[];
+    infractions: Infraction[];
+    keys: CleObc[];
+    invariants: Invariant[];
+    scpConfigs: ScpConfiguration[];
 }
 
-export const Dashboard = ({ selectedPartnerId, globalYear }: DashboardProps) => {
+export const Dashboard = ({ selectedPartnerId, globalYear, partners, drivers, vehicles, reports, infractions, keys, invariants, scpConfigs }: DashboardProps) => {
     const [selectedDriverId, setSelectedDriverId] = useState<string>('');
     
     // Utilise l'année globale sélectionnée, ou l'année courante par défaut
@@ -43,14 +51,14 @@ export const Dashboard = ({ selectedPartnerId, globalYear }: DashboardProps) => 
 
     // 1. Filtrer les conducteurs
     const availableDrivers = useMemo(() => {
-        if (selectedPartnerId === 'all') return mockConducteurs;
-        return mockConducteurs.filter(d => 
+        if (selectedPartnerId === 'all') return drivers;
+        return drivers.filter(d => 
             d.cle_obc_ids?.some(keyId => {
-                const key = mockCleObcList.find(k => k.id === keyId);
+                const key = keys.find(k => k.id === keyId);
                 return key?.partenaire_id === selectedPartnerId;
             })
         );
-    }, [selectedPartnerId]);
+    }, [selectedPartnerId, drivers, keys]);
 
     // KPI Spécifique : Conducteurs avec Clé OBC
     const driversKeyStats = useMemo(() => {
@@ -61,9 +69,9 @@ export const Dashboard = ({ selectedPartnerId, globalYear }: DashboardProps) => 
 
     // KPI Spécifique : Nombre de Véhicules
     const vehicleCount = useMemo(() => {
-        if (selectedPartnerId === 'all') return mockVehicules.length;
-        return mockVehicules.filter(v => v.partenaire_id === selectedPartnerId).length;
-    }, [selectedPartnerId]);
+        if (selectedPartnerId === 'all') return vehicles.length;
+        return vehicles.filter(v => v.partenaire_id === selectedPartnerId).length;
+    }, [selectedPartnerId, vehicles]);
 
     // 2. Calcul des Stats Globales & Agrégation Mensuelle
     const dashboardData = useMemo(() => {
@@ -88,7 +96,7 @@ export const Dashboard = ({ selectedPartnerId, globalYear }: DashboardProps) => 
         };
 
         // Traitement des rapports
-        mockRapports.forEach(r => {
+        reports.forEach(r => {
             if (!isMatch(r.partenaire_id, r.conducteur_id)) return;
             
             const d = new Date(r.date);
@@ -116,8 +124,8 @@ export const Dashboard = ({ selectedPartnerId, globalYear }: DashboardProps) => 
         const pointsLostByInvariant: {[title: string]: number} = {};
         const recentInfractionsList: any[] = [];
 
-        mockInfractions.forEach(inf => {
-            const report = mockRapports.find(r => r.id === inf.rapports_id);
+        infractions.forEach(inf => {
+            const report = reports.find(r => r.id === inf.rapports_id);
             const driverId = report ? report.conducteur_id : '';
             
             // Si pas de rapport lié direct, on check si le partenaire match l'infraction directement
@@ -132,7 +140,7 @@ export const Dashboard = ({ selectedPartnerId, globalYear }: DashboardProps) => 
             monthlyData[d.getMonth()].infractions += 1;
             
             totalInfractionsCount += 1;
-            const severity = getInfractionSeverity(inf, mockRapports, mockInvariants, mockScpConfigurations);
+            const severity = getInfractionSeverity(inf, reports, invariants, scpConfigs);
             totalScpLost += severity.points;
 
             const typeKey = inf.type_infraction;
@@ -143,7 +151,7 @@ export const Dashboard = ({ selectedPartnerId, globalYear }: DashboardProps) => 
             }
 
             const invariantTitle = report?.invariant_id 
-                ? mockInvariants.find(i => i.id === report.invariant_id)?.titre || "Autre"
+                ? invariants.find(i => i.id === report.invariant_id)?.titre || "Autre"
                 : (inf.type_infraction || "Autre"); // Fallback sur le type si pas d'invariant lié
             
             // Tronquer le titre s'il est trop long pour le graphique
@@ -152,7 +160,7 @@ export const Dashboard = ({ selectedPartnerId, globalYear }: DashboardProps) => 
 
             recentInfractionsList.push({
                 ...inf,
-                driverName: report ? mockConducteurs.find(c => c.id === report.conducteur_id)?.nom : 'Inconnu',
+                driverName: report ? drivers.find(c => c.id === report.conducteur_id)?.nom : 'Inconnu',
                 severity
             });
         });
@@ -163,7 +171,7 @@ export const Dashboard = ({ selectedPartnerId, globalYear }: DashboardProps) => 
 
         const driverPointsData = Object.entries(pointsLostByDriver)
             .map(([id, points]) => {
-                const d = mockConducteurs.find(c => c.id === id);
+                const d = drivers.find(c => c.id === id);
                 return { name: d ? `${d.prenom} ${d.nom}` : 'Inconnu', points };
             })
             .sort((a, b) => b.points - a.points)
@@ -194,7 +202,7 @@ export const Dashboard = ({ selectedPartnerId, globalYear }: DashboardProps) => 
                 safetyScore
             }
         };
-    }, [selectedPartnerId, selectedDriverId, currentYear]);
+    }, [selectedPartnerId, selectedDriverId, currentYear, reports, infractions, invariants, scpConfigs, drivers]);
 
     const PIE_COLORS = ['#3b82f6', '#ef4444', '#f59e0b', '#10b981', '#8b5cf6', '#64748b'];
 
@@ -232,7 +240,7 @@ export const Dashboard = ({ selectedPartnerId, globalYear }: DashboardProps) => 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <StatCard 
                     title="Partenaires" 
-                    value={selectedPartnerId === 'all' ? mockConducteurs.length : 1} 
+                    value={selectedPartnerId === 'all' ? partners.length : 1} 
                     icon={User} 
                     color="bg-slate-500" 
                 />

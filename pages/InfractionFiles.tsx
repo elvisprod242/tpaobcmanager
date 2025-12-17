@@ -1,26 +1,27 @@
 
 import React, { useState } from 'react';
-import { ArrowLeft, FileText, Upload, Trash2, Eye, Download, AlertTriangle, AlertOctagon, User, Calendar, FolderOpen, Image as ImageIcon, X } from 'lucide-react';
+import { ArrowLeft, FileText, Upload, Trash2, Eye, Download, AlertTriangle, AlertOctagon, User, Calendar, FolderOpen, Image as ImageIcon, X, Loader2 } from 'lucide-react';
 import { Infraction, InfractionFile, UserRole } from '../types';
-import { mockInfractions, mockConducteurs, mockRapports, mockInvariants, mockScpConfigurations } from '../services/mockData';
+import { mockConducteurs, mockRapports, mockInvariants, mockScpConfigurations } from '../services/mockData';
 import { getInfractionSeverity } from '../utils/helpers';
 import { Modal } from '../components/ui/Modal';
+import { storageService } from '../services/storage';
 
 interface InfractionFilesProps {
     infractionId: string;
+    infractions: Infraction[];
+    setInfractions: React.Dispatch<React.SetStateAction<Infraction[]>>;
     onBack: () => void;
     userRole: UserRole;
 }
 
-export const InfractionFiles = ({ infractionId, onBack, userRole }: InfractionFilesProps) => {
+export const InfractionFiles = ({ infractionId, infractions, setInfractions, onBack, userRole }: InfractionFilesProps) => {
     // Dans une vraie app, on ferait un fetch ici. On simule la récupération et l'état local.
-    const originalInfraction = mockInfractions.find(i => i.id === infractionId);
+    const infraction = infractions.find(i => i.id === infractionId);
     
-    // État local pour manipuler les fichiers dans cette vue
-    const [infraction, setInfraction] = useState<Infraction | undefined>(originalInfraction);
-    
-    // État pour la visualisation (Stocke l'objet fichier complet maintenant)
+    // État pour la visualisation
     const [viewingFile, setViewingFile] = useState<InfractionFile | null>(null);
+    const [isUploading, setIsUploading] = useState(false);
 
     const isReadOnly = userRole === 'directeur';
 
@@ -43,34 +44,43 @@ export const InfractionFiles = ({ infractionId, onBack, userRole }: InfractionFi
 
     const severity = getInfractionSeverity(infraction, mockRapports, mockInvariants, mockScpConfigurations);
 
-    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files[0] && infraction) {
             const file = e.target.files[0];
-            const newFile: InfractionFile = {
-                id: `file_${Date.now()}`,
-                infractions_id: infraction.id,
-                file: file.name,
-                description: "Nouveau justificatif ajouté",
-                url: URL.createObjectURL(file),
-                type: file.name.split('.').pop()?.toLowerCase() || 'unknown'
-            };
-            
-            const updatedFiles = [...(infraction.files || []), newFile];
-            setInfraction({ ...infraction, files: updatedFiles });
-            
-            // Mise à jour du mock global (simulation de persistance)
-            const idx = mockInfractions.findIndex(i => i.id === infraction.id);
-            if(idx !== -1) mockInfractions[idx].files = updatedFiles;
+            setIsUploading(true);
+
+            try {
+                // Upload vers Firebase Storage
+                const url = await storageService.uploadFile(file, 'infractions');
+
+                const newFile: InfractionFile = {
+                    id: `file_${Date.now()}`,
+                    infractions_id: infraction.id,
+                    file: file.name,
+                    description: "Nouveau justificatif ajouté",
+                    url: url,
+                    type: file.name.split('.').pop()?.toLowerCase() || 'unknown'
+                };
+                
+                const updatedFiles = [...(infraction.files || []), newFile];
+                
+                // Mise à jour via props
+                setInfractions(prev => prev.map(i => i.id === infractionId ? { ...i, files: updatedFiles } : i));
+            } catch (error) {
+                console.error("Upload échoué:", error);
+                alert("Erreur lors de l'envoi du fichier.");
+            } finally {
+                setIsUploading(false);
+            }
         }
     };
 
     const handleDeleteFile = (fileId: string) => {
-        if (window.confirm("Supprimer ce fichier ?")) {
+        if (window.confirm("Supprimer ce fichier ?") && infraction) {
             const updatedFiles = (infraction.files || []).filter(f => f.id !== fileId);
-            setInfraction({ ...infraction, files: updatedFiles });
-             // Mise à jour du mock global
-            const idx = mockInfractions.findIndex(i => i.id === infraction.id);
-            if(idx !== -1) mockInfractions[idx].files = updatedFiles;
+            
+            // Mise à jour via props
+            setInfractions(prev => prev.map(i => i.id === infractionId ? { ...i, files: updatedFiles } : i));
         }
     };
 
@@ -144,11 +154,11 @@ export const InfractionFiles = ({ infractionId, onBack, userRole }: InfractionFi
                 {/* Upload Card */}
                 {!isReadOnly && (
                     <div className="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-2xl p-6 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group relative min-h-[200px]">
-                        <input type="file" className="absolute inset-0 opacity-0 cursor-pointer z-10" onChange={handleFileUpload} />
+                        <input type="file" className="absolute inset-0 opacity-0 cursor-pointer z-10" onChange={handleFileUpload} disabled={isUploading} />
                         <div className="w-16 h-16 bg-blue-50 dark:bg-slate-700 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                            <Upload size={32} />
+                            {isUploading ? <Loader2 size={32} className="animate-spin" /> : <Upload size={32} />}
                         </div>
-                        <h3 className="font-bold text-slate-700 dark:text-slate-200">Ajouter un document</h3>
+                        <h3 className="font-bold text-slate-700 dark:text-slate-200">{isUploading ? 'Envoi en cours...' : 'Ajouter un document'}</h3>
                         <p className="text-xs text-slate-500 mt-1">PDF, Image, Word...</p>
                     </div>
                 )}

@@ -1,11 +1,10 @@
-
 import React, { useState, useMemo } from 'react';
 import { Calendar, User, AlertCircle, ChevronDown, Activity, Edit2, Plus, Save, Printer, FileText, FileSpreadsheet } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import { TempsRepos, Partenaire, Rapport } from '../types';
-import { mockTempsRepos, mockRapports, mockConducteurs } from '../services/mockData';
+import { mockRapports, mockConducteurs } from '../services/mockData';
 import { Modal } from '../components/ui/Modal';
 import { FormInput } from '../components/ui/FormElements';
 
@@ -30,14 +29,19 @@ const getWeekNumber = (d: Date): number => {
     return Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
 };
 
-export const RestTime = ({ selectedPartnerId, partners, globalYear }: { selectedPartnerId: string, partners: Partenaire[], globalYear: string }) => {
+interface RestTimeProps {
+    selectedPartnerId: string;
+    partners: Partenaire[];
+    globalYear: string;
+    analyses: TempsRepos[];
+    setAnalyses: React.Dispatch<React.SetStateAction<TempsRepos[]>>;
+}
+
+export const RestTime = ({ selectedPartnerId, partners, globalYear, analyses, setAnalyses }: RestTimeProps) => {
     // Utilisation de l'année globale, ou l'année courante par défaut si non sélectionnée
     const currentYear = globalYear ? parseInt(globalYear) : new Date().getFullYear();
     const [selectedMonth, setSelectedMonth] = useState<string>(new Date().getMonth().toString());
     const [selectedDriverId, setSelectedDriverId] = useState<string>('');
-    
-    // État pour gérer les analyses localement
-    const [analyses, setAnalyses] = useState<TempsRepos[]>(mockTempsRepos);
     
     // État pour le modal
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -282,7 +286,7 @@ export const RestTime = ({ selectedPartnerId, partners, globalYear }: { selected
                 const dateStr = new Date().toLocaleDateString('fr-FR');
                 doc.text(`Généré le ${dateStr} par TPA Manager`, data.settings.margin.left, doc.internal.pageSize.height - 10);
                 
-                const pageStr = 'Page ' + doc.internal.getNumberOfPages();
+                const pageStr = 'Page ' + doc.getNumberOfPages();
                 doc.text(pageStr, doc.internal.pageSize.width - data.settings.margin.right - doc.getTextWidth(pageStr), doc.internal.pageSize.height - 10);
             }
         });

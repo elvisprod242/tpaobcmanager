@@ -2,19 +2,23 @@
 import React, { useState, useMemo } from 'react';
 import { ArrowLeft, Save, ShieldCheck, AlertTriangle, AlertOctagon, Edit2, Search, Plus, Trash2 } from 'lucide-react';
 import { ScpConfiguration, Partenaire, Invariant, UserRole } from '../types';
-import { mockScpConfigurations, mockInvariants } from '../services/mockData';
+import { mockInvariants } from '../services/mockData';
 import { Modal } from '../components/ui/Modal';
-import { FormInput, FormSelect } from '../components/ui/FormElements';
+import { FormInput } from '../components/ui/FormElements';
 
 interface ScpAttributionProps {
     selectedPartnerId: string;
     partners: Partenaire[];
     onBack: () => void;
     userRole: UserRole;
+    scpConfigs: ScpConfiguration[];
+    setScpConfigs: (data: ScpConfiguration[]) => void;
 }
 
-export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole }: ScpAttributionProps) => {
-    const [configs, setConfigs] = useState<ScpConfiguration[]>(mockScpConfigurations);
+export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, scpConfigs, setScpConfigs }: ScpAttributionProps) => {
+    const configs = scpConfigs;
+    const setConfigs = setScpConfigs;
+    
     const [filterText, setFilterText] = useState('');
     
     // Modal state
@@ -58,27 +62,25 @@ export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole }
 
     const handleDeleteConfig = (configId: string) => {
         if (window.confirm("Supprimer cette configuration de sanction ?")) {
-            setConfigs(prev => prev.filter(c => c.id !== configId));
+            setConfigs(configs.filter(c => c.id !== configId));
         }
     };
 
     const handleSave = () => {
         if (!editingConfig.invariants_id || !editingConfig.sanction) return;
 
-        setConfigs(prev => {
-            // Vérifier si une config existe déjà pour cet ID d'invariant ET ce Type
-            const existsIndex = prev.findIndex(c => c.invariants_id === editingConfig.invariants_id && c.type === editingConfig.type);
-            
-            if (existsIndex >= 0) {
-                // Mise à jour de l'existante
-                const newConfigs = [...prev];
-                newConfigs[existsIndex] = { ...newConfigs[existsIndex], ...editingConfig } as ScpConfiguration;
-                return newConfigs;
-            } else {
-                // Ajout nouvelle
-                return [...prev, editingConfig as ScpConfiguration];
-            }
-        });
+        // Vérifier si une config existe déjà pour cet ID d'invariant ET ce Type
+        const existsIndex = configs.findIndex(c => c.invariants_id === editingConfig.invariants_id && c.type === editingConfig.type);
+        
+        if (existsIndex >= 0) {
+            // Mise à jour de l'existante
+            const newConfigs = [...configs];
+            newConfigs[existsIndex] = { ...newConfigs[existsIndex], ...editingConfig } as ScpConfiguration;
+            setConfigs(newConfigs);
+        } else {
+            // Ajout nouvelle
+            setConfigs([...configs, editingConfig as ScpConfiguration]);
+        }
         setIsModalOpen(false);
     };
 

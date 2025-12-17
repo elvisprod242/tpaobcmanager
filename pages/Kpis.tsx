@@ -1,8 +1,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { Calendar, ChevronDown, Save, Edit2, Printer, FileText } from 'lucide-react';
-import { Kpi, Partenaire, Invariant, Objectif } from '../types';
-import { mockKpis, mockRapports, mockInfractions, mockInvariants, mockObjectifs } from '../services/mockData';
+import { Kpi, Partenaire, Invariant, Objectif, Rapport, Infraction } from '../types';
 import { Modal } from '../components/ui/Modal';
 import { FormInput } from '../components/ui/FormElements';
 import jsPDF from 'jspdf';
@@ -22,19 +21,27 @@ interface KpiRow {
     objectif: string | number;
     commentaire: string;
     isInvariant: boolean;
-    isFixed?: boolean; // Pour distinguer la partie haute fixe
-    isSeparator?: boolean; // Gardé pour compatibilité interface, mais non utilisé en mode agrégé
-    // Pour la vue annuelle
+    isFixed?: boolean;
+    isSeparator?: boolean;
     analyse_cause?: string;
     action_prise?: string;
     objectif_annuel?: string | number;
 }
 
-export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPartnerId: string, partners: Partenaire[], globalYear: string }) => {
+interface KpisProps {
+    selectedPartnerId: string;
+    partners: Partenaire[];
+    globalYear: string;
+    reports: Rapport[];
+    infractions: Infraction[];
+    invariants: Invariant[];
+    objectives: Objectif[];
+}
+
+export const Kpis = ({ selectedPartnerId, partners, globalYear, reports, infractions, invariants, objectives }: KpisProps) => {
     const [viewPeriod, setViewPeriod] = useState<'month' | 'year'>('month');
     const [selectedMonth, setSelectedMonth] = useState<string>(new Date().getMonth().toString());
     
-    // Utilisation de l'année globale, ou l'année courante par défaut si non sélectionnée
     const selectedYear = globalYear ? parseInt(globalYear) : new Date().getFullYear();
     
     // État local pour les commentaires (session)
@@ -67,13 +74,10 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPart
     const tableData = useMemo(() => {
         const rows: KpiRow[] = [];
         
-        // Facteur multiplicateur : Si "Tous les partenaires", on multiplie par le nombre de partenaires pour les valeurs fixes
-        // Pour les invariants dynamiques, on additionnera les cibles réelles.
         const multiplier = selectedPartnerId === 'all' ? partners.length : 1;
 
         // --- 1. Partie Fixe (Haut du tableau) ---
-        // On récupère les rapports filtrés pour les calculs de base
-        const relevantReports = mockRapports.filter(r => {
+        const relevantReports = reports.filter(r => {
             const rDate = new Date(r.date);
             const matchesPartner = selectedPartnerId === 'all' || r.partenaire_id === selectedPartnerId;
             const matchesYear = rDate.getFullYear() === selectedYear;
@@ -85,8 +89,6 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPart
         const totalDrivingHours = Math.round(relevantReports.reduce((acc, r) => acc + timeStringToHours(r.temps_conduite), 0));
         const totalRestHours = Math.round(relevantReports.reduce((acc, r) => acc + timeStringToHours(r.temps_attente), 0));
 
-        // Calcul dynamique des objectifs fixes basé sur le multiplicateur
-        // Valeurs de base (pour 1 partenaire)
         const baseConduiteMensuel = 8580;
         const baseReposMensuel = 132;
         
@@ -121,7 +123,7 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPart
         rows.push({
             id: 'fixed_repos',
             label: 'Temps de repos',
-            valeur: totalRestHours, // Utilisation du temps d'attente comme proxy pour l'exemple
+            valeur: totalRestHours, 
             objectif: `${objReposMensuel.toLocaleString('fr-FR')} Jours/Min`,
             objectif_annuel: `${objReposAnnuel.toLocaleString('fr-FR')} Jours/Min`,
             commentaire: comments['fixed_repos'] || '',
@@ -131,55 +133,46 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPart
 
         // --- 2. Partie Invariants (Bas du tableau - Agrégé) ---
         
-        // On identifie tous les TITRES d'invariants uniques disponibles.
-        const allUniqueTitles = Array.from(new Set(mockInvariants.map(i => i.titre)));
+        const allUniqueTitles = Array.from(new Set(invariants.map(i => i.titre)));
 
         allUniqueTitles.forEach(title => {
-            // Trouver tous les invariants (objets) qui correspondent à ce titre
-            // et qui appartiennent au contexte actuel (Partner X ou All)
-            const matchingInvariants = mockInvariants.filter(inv => 
+            const matchingInvariants = invariants.filter(inv => 
                 inv.titre === title && 
                 (selectedPartnerId === 'all' || inv.partenaire_id === selectedPartnerId)
             );
 
             if (matchingInvariants.length === 0) return;
 
-            // Récupérer les IDs de ces invariants pour filtrer les rapports/infractions
             const matchingInvariantIds = matchingInvariants.map(inv => inv.id);
 
-            // Calcul du nombre d'infractions cumulées pour ce titre d'invariant
-            const infractionCount = mockInfractions.filter(inf => {
+            const infractionCount = infractions.filter(inf => {
                 const rDate = new Date(inf.date);
                 const matchesYear = rDate.getFullYear() === selectedYear;
                 const matchesMonth = viewPeriod === 'year' || rDate.getMonth() === parseInt(selectedMonth);
                 
                 if (selectedPartnerId !== 'all' && inf.partenaire_id !== selectedPartnerId) return false;
 
-                const report = mockRapports.find(r => r.id === inf.rapports_id);
+                const report = reports.find(r => r.id === inf.rapports_id);
                 if (report && matchingInvariantIds.includes(report.invariant_id || '')) {
                     return matchesYear && matchesMonth;
                 }
                 return false; 
             }).length;
 
-            // --- CALCUL DES OBJECTIFS AGRÉGÉS ---
-            // On additionne les cibles de chaque invariant correspondant
             let totalCible = 0;
             let unite = '';
             
             matchingInvariants.forEach(inv => {
-                const obj = mockObjectifs.find(o => o.invariant_id === inv.id);
+                const obj = objectives.find(o => o.invariant_id === inv.id);
                 if (obj) {
                     totalCible += obj.cible;
-                    if (!unite && obj.unite) unite = obj.unite; // Prend la première unité trouvée
+                    if (!unite && obj.unite) unite = obj.unite;
                 }
             });
 
-            // Si aucun objectif n'est défini, on met 0 par défaut
             const objectifVal = `${totalCible} ${unite}`;
-            const objectifAnnuelVal = `${totalCible * 12} ${unite}`; // Annuel = Mensuel * 12
+            const objectifAnnuelVal = `${totalCible * 12} ${unite}`;
 
-            // Création d'un ID unique pour la ligne agrégée
             const rowId = selectedPartnerId === 'all' ? `agg_${title.replace(/\s+/g, '_')}` : matchingInvariants[0].id;
 
             rows.push({
@@ -198,7 +191,7 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPart
         });
 
         return rows;
-    }, [selectedPartnerId, selectedMonth, selectedYear, viewPeriod, comments, partners.length]);
+    }, [selectedPartnerId, selectedMonth, selectedYear, viewPeriod, comments, partners.length, reports, infractions, invariants, objectives]);
 
     const handleEdit = (row: KpiRow) => {
         setEditingRow(row);
@@ -213,12 +206,10 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPart
 
     const handleSave = () => {
         if (editingRow) {
-            // Mise à jour des commentaires pour tout le monde
             setComments(prev => ({
                 ...prev,
                 [editingRow.id]: editForm.commentaire
             }));
-            // Note: L'édition de l'objectif "Fixe" est désactivée car calculée dynamiquement maintenant
         }
         setIsModalOpen(false);
     };
@@ -248,7 +239,7 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPart
             body: body,
             startY: 30,
             theme: 'grid',
-            headStyles: { fillColor: [91, 155, 213] } // Bleu #5b9bd5
+            headStyles: { fillColor: [91, 155, 213] }
         });
         doc.save('kpi-report.pdf');
     };
@@ -289,7 +280,6 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPart
                                 <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                             </div>
                         )}
-                        {/* Sélecteur d'année local supprimé ici, utilisation du filtre global */}
                     </div>
                 </div>
 
@@ -330,7 +320,6 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPart
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
-                            {/* Partie Fixe */}
                             {tableData.filter(r => r.isFixed).map((row, index) => (
                                 <tr key={row.id} className={`${index % 2 === 0 ? 'bg-slate-50/50 dark:bg-slate-900/20' : 'bg-white dark:bg-slate-800'}`}>
                                     <td className="px-4 py-4 border-r border-slate-200 dark:border-slate-700 font-bold text-slate-800 dark:text-slate-100">
@@ -362,12 +351,10 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPart
                                 </tr>
                             ))}
 
-                            {/* Séparateur visuel entre Fixe et Dynamique */}
                             <tr className="bg-[#5b9bd5]/10 h-2 border-t border-b border-blue-200 dark:border-blue-900">
                                 <td colSpan={5}></td>
                             </tr>
                             
-                            {/* Partie Invariants (Agrégée) */}
                             {tableData.filter(r => !r.isFixed).map((row, index) => {
                                 const isAlert = Number(row.valeur) > 0;
                                 return (
@@ -451,27 +438,6 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear }: { selectedPart
                             placeholder="Ajouter une observation..."
                         />
                     </div>
-                    
-                    {viewPeriod === 'year' && (
-                        <>
-                            <div className="space-y-2">
-                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300">Analyse de cause</label>
-                                <textarea 
-                                    className="w-full px-4 py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white h-24 resize-none" 
-                                    value={editForm.analyse_cause} 
-                                    onChange={(e) => setEditForm({...editForm, analyse_cause: e.target.value})}
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300">Action prise</label>
-                                <textarea 
-                                    className="w-full px-4 py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white h-24 resize-none" 
-                                    value={editForm.action_prise} 
-                                    onChange={(e) => setEditForm({...editForm, action_prise: e.target.value})}
-                                />
-                            </div>
-                        </>
-                    )}
                 </div>
             </Modal>
         </div>

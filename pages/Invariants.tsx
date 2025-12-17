@@ -1,13 +1,18 @@
-
 import React, { useState } from 'react';
 import { Plus, Edit2, Trash2, ShieldCheck, Save, AlertTriangle } from 'lucide-react';
 import { Invariant, Partenaire, UserRole } from '../types';
-import { mockInvariants } from '../services/mockData';
 import { Modal } from '../components/ui/Modal';
 import { FormInput } from '../components/ui/FormElements';
 
-export const Invariants = ({ selectedPartnerId, partners, userRole }: { selectedPartnerId: string, partners: Partenaire[], userRole: UserRole }) => {
-    const [invariants, setInvariants] = useState<Invariant[]>(mockInvariants);
+interface InvariantsProps {
+    selectedPartnerId: string;
+    partners: Partenaire[];
+    invariants: Invariant[];
+    setInvariants: React.Dispatch<React.SetStateAction<Invariant[]>>;
+    userRole: UserRole;
+}
+
+export const Invariants = ({ selectedPartnerId, partners, invariants, setInvariants, userRole }: InvariantsProps) => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [formData, setFormData] = useState<Partial<Invariant>>({ titre: '', description: '', partenaire_id: '' });

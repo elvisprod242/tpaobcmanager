@@ -1,8 +1,12 @@
 
-import React, { useState, useRef } from 'react';
-import { User as UserIcon, Shield, Lock, Monitor, Save, LogOut, Trash2, Check, Moon, Sun, Camera, CheckCircle as CheckCircleIcon, Database, Mail, Briefcase, Phone, MapPin, Globe } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { User as UserIcon, Shield, Lock, Monitor, Save, LogOut, Trash2, Check, Moon, Sun, Camera, CheckCircle as CheckCircleIcon, Database, Mail, Briefcase, Phone, MapPin, Loader2, AlertCircle } from 'lucide-react';
 import { FormInput } from '../components/ui/FormElements';
 import { User } from '../types';
+import { storageService } from '../services/storage';
+import { api } from '../services/api';
+import { auth } from '../services/firebase';
+import { sendPasswordResetEmail } from 'firebase/auth';
 
 interface SettingsProps {
     isDarkMode: boolean;
@@ -14,49 +18,93 @@ interface SettingsProps {
 export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: SettingsProps) => {
     const [activeTab, setActiveTab] = useState<'profile' | 'security' | 'display' | 'data'>('profile');
     const [isLoading, setIsLoading] = useState(false);
+    const [isUploading, setIsUploading] = useState(false);
     const [showSuccess, setShowSuccess] = useState(false);
+    const [errorMessage, setErrorMessage] = useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Form States
+    // Initialisation du formulaire avec les données de l'utilisateur courant
     const [profile, setProfile] = useState({
-        firstName: currentUser?.prenom || 'Admin',
-        lastName: currentUser?.nom || 'User',
-        email: currentUser?.email || 'admin@tpa.com',
-        phone: '+33 6 12 34 56 78',
+        firstName: currentUser?.prenom || '',
+        lastName: currentUser?.nom || '',
+        email: currentUser?.email || '',
+        phone: '+33 6 00 00 00 00', // Placeholder si non présent dans le type User
         role: currentUser?.role === 'admin' ? 'Administrateur Principal' : (currentUser?.role === 'directeur' ? 'Directeur Général' : 'OBC / Manager'),
         department: 'Direction Logistique',
-        bio: 'Gestionnaire de flotte senior avec 10 ans d\'expérience dans le transport routier et la sécurité.',
-        location: 'Paris, France',
+        bio: 'Gestionnaire de flotte sur la plateforme TPA.',
+        location: 'Abidjan, Côte d\'Ivoire',
         avatarUrl: currentUser?.avatarUrl || ''
     });
 
-    const [displaySettings, setDisplaySettings] = useState({
-        density: 'comfortable',
-        colorTheme: 'blue'
-    });
+    // Mise à jour si currentUser change (ex: rechargement)
+    useEffect(() => {
+        if (currentUser) {
+            setProfile(prev => ({
+                ...prev,
+                firstName: currentUser.prenom || '',
+                lastName: currentUser.nom || '',
+                email: currentUser.email || '',
+                avatarUrl: currentUser.avatarUrl || ''
+            }));
+        }
+    }, [currentUser]);
 
-    const handleSave = () => {
+    const handleSave = async () => {
+        if (!currentUser) return;
         setIsLoading(true);
-        // Simulation d'appel API
-        setTimeout(() => {
-            setIsLoading(false);
+        setErrorMessage('');
+
+        try {
+            // Sauvegarde dans Firestore via l'API
+            const updatedUser: Partial<User> = {
+                id: currentUser.id,
+                nom: profile.lastName,
+                prenom: profile.firstName,
+                avatarUrl: profile.avatarUrl,
+                // Note: On ne sauvegarde pas department, bio, phone, location car ils ne sont pas dans le type User pour l'instant
+                // Mais l'API accepte Partial<User>, donc ça n'effacera pas les autres champs s'ils existent en base
+            };
+
+            await api.updateUserProfile(updatedUser);
+            
+            // Mise à jour du localStorage pour refléter les changements immédiatement sans reload
+            const storedUser = localStorage.getItem('current_user');
+            if (storedUser) {
+                const parsed = JSON.parse(storedUser);
+                localStorage.setItem('current_user', JSON.stringify({ ...parsed, ...updatedUser }));
+            }
+
             setShowSuccess(true);
             setTimeout(() => setShowSuccess(false), 3000);
-        }, 800);
+        } catch (error) {
+            console.error("Erreur sauvegarde profil:", error);
+            setErrorMessage("Erreur lors de la sauvegarde du profil.");
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     const handleResetDatabase = () => {
-        if (window.confirm("ATTENTION : Vous êtes sur le point d'effacer toutes les données locales et de remettre les données par défaut. Continuer ?")) {
+        if (window.confirm("ATTENTION : Cette action efface les données mises en cache localement (Mock). Les données réelles sur Firestore ne seront pas touchées. Continuer ?")) {
             localStorage.clear();
             window.location.reload();
         }
     };
 
-    const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
-        if (file) {
-            const url = URL.createObjectURL(file);
+        if (!file || !currentUser) return;
+
+        setIsUploading(true);
+        try {
+            // Upload vers Firebase Storage
+            const url = await storageService.uploadFile(file, `avatars/${currentUser.id}`);
             setProfile(prev => ({ ...prev, avatarUrl: url }));
+        } catch (error) {
+            console.error("Erreur upload avatar:", error);
+            setErrorMessage("Impossible de télécharger l'image.");
+        } finally {
+            setIsUploading(false);
         }
     };
 
@@ -67,6 +115,22 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
 
     const triggerFileInput = () => {
         fileInputRef.current?.click();
+    };
+
+    const handlePasswordReset = async () => {
+        if (!profile.email) return;
+        if (!auth) {
+            setErrorMessage("Service d'authentification indisponible.");
+            return;
+        }
+        
+        try {
+            await sendPasswordResetEmail(auth, profile.email);
+            alert(`Un email de réinitialisation a été envoyé à ${profile.email}`);
+        } catch (error: any) {
+            console.error("Erreur reset password:", error);
+            setErrorMessage(error.message || "Erreur lors de l'envoi de l'email.");
+        }
     };
 
     const tabs = [
@@ -89,7 +153,7 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                 {profile.avatarUrl ? (
                                     <img src={profile.avatarUrl} alt="Profile" className="w-full h-full object-cover" />
                                 ) : (
-                                    <span>{profile.firstName[0]}{profile.lastName[0]}</span>
+                                    <span>{profile.firstName ? profile.firstName[0] : 'U'}{profile.lastName ? profile.lastName[0] : ''}</span>
                                 )}
                             </div>
                             <h3 className="font-bold text-slate-900 dark:text-white truncate w-full">{profile.firstName} {profile.lastName}</h3>
@@ -154,10 +218,12 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                         <div className="relative group cursor-pointer" onClick={triggerFileInput}>
                                             <div className="w-32 h-32 rounded-full bg-white dark:bg-slate-800 p-1.5 shadow-xl">
                                                 <div className="w-full h-full rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center overflow-hidden relative">
-                                                    {profile.avatarUrl ? (
+                                                    {isUploading ? (
+                                                        <Loader2 size={32} className="animate-spin text-blue-500" />
+                                                    ) : profile.avatarUrl ? (
                                                         <img src={profile.avatarUrl} alt="Profile" className="w-full h-full object-cover" />
                                                     ) : (
-                                                        <span className="text-4xl font-bold text-slate-400 dark:text-slate-500">{profile.firstName[0]}{profile.lastName[0]}</span>
+                                                        <span className="text-4xl font-bold text-slate-400 dark:text-slate-500">{profile.firstName ? profile.firstName[0] : ''}{profile.lastName ? profile.lastName[0] : ''}</span>
                                                     )}
                                                     {/* Overlay Edit */}
                                                     <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-[2px]">
@@ -175,7 +241,7 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                                     <Trash2 size={14} />
                                                 </button>
                                             )}
-                                            <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
+                                            <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} disabled={isUploading} />
                                         </div>
                                         
                                         <div className="flex-1 pt-12 sm:pt-0 sm:pb-2 text-center sm:text-left">
@@ -184,11 +250,18 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                         </div>
 
                                         <div className="hidden sm:block pb-2">
-                                            <button onClick={handleSave} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-medium shadow-lg shadow-blue-600/20 active:scale-95 transition-all flex items-center gap-2">
-                                                <Save size={18} /> Enregistrer
+                                            <button onClick={handleSave} disabled={isLoading} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl font-medium shadow-lg shadow-blue-600/20 active:scale-95 transition-all flex items-center gap-2 disabled:opacity-70 disabled:cursor-wait">
+                                                {isLoading ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />} Enregistrer
                                             </button>
                                         </div>
                                     </div>
+
+                                    {errorMessage && (
+                                        <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-300 rounded-xl flex items-center gap-2 border border-red-100 dark:border-red-900/50">
+                                            <AlertCircle size={18} />
+                                            <span className="text-sm">{errorMessage}</span>
+                                        </div>
+                                    )}
 
                                     {/* Formulaire Grid */}
                                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -200,8 +273,8 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                                 <h3 className="font-bold text-slate-800 dark:text-white">Identité</h3>
                                             </div>
                                             <div className="grid grid-cols-2 gap-4">
-                                                <FormInput label="Prénom" value={profile.firstName} onChange={(e: any) => setProfile({...profile, firstName: e.target.value})} />
-                                                <FormInput label="Nom" value={profile.lastName} onChange={(e: any) => setProfile({...profile, lastName: e.target.value})} />
+                                                <FormInput label="Prénom" value={profile.firstName} onChange={(e: any) => setProfile({...profile, firstName: e.target.value})} disabled={isLoading} />
+                                                <FormInput label="Nom" value={profile.lastName} onChange={(e: any) => setProfile({...profile, lastName: e.target.value})} disabled={isLoading} />
                                             </div>
                                             <div className="relative">
                                                 <FormInput label="Bio / À propos" value="" onChange={() => {}} className="hidden" /> {/* Spacer hack or custom wrapper needed */}
@@ -210,6 +283,7 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                                     className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white transition-all h-28 resize-none"
                                                     value={profile.bio}
                                                     onChange={(e) => setProfile({...profile, bio: e.target.value})}
+                                                    disabled={isLoading}
                                                 />
                                             </div>
                                         </div>
@@ -224,18 +298,18 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                             <div className="grid grid-cols-1 gap-4">
                                                 <div className="relative">
                                                     <Mail size={16} className="absolute top-9 left-3 text-slate-400 z-10" />
-                                                    <FormInput label="Email Professionnel" value={profile.email} onChange={(e: any) => setProfile({...profile, email: e.target.value})} className="pl-8" />
+                                                    <FormInput label="Email Professionnel (Lecture seule)" value={profile.email} onChange={() => {}} className="pl-8 opacity-70 cursor-not-allowed" disabled={true} />
                                                     <style>{`input[type="email"] { padding-left: 2.5rem; }`}</style>
                                                 </div>
                                                 
                                                 <div className="grid grid-cols-2 gap-4">
                                                     <div>
-                                                        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Rôle (Lecture seule)</label>
+                                                        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Rôle</label>
                                                         <div className="w-full px-4 py-2.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-500 dark:text-slate-400 font-medium cursor-not-allowed flex items-center gap-2">
                                                             <Shield size={14} /> {profile.role}
                                                         </div>
                                                     </div>
-                                                    <FormInput label="Département" value={profile.department} onChange={(e: any) => setProfile({...profile, department: e.target.value})} />
+                                                    <FormInput label="Département" value={profile.department} onChange={(e: any) => setProfile({...profile, department: e.target.value})} disabled={isLoading} />
                                                 </div>
 
                                                 <div className="grid grid-cols-2 gap-4">
@@ -243,14 +317,14 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                                         <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Téléphone</label>
                                                         <div className="relative">
                                                             <Phone size={16} className="absolute top-3 left-3 text-slate-400" />
-                                                            <input type="text" value={profile.phone} onChange={(e) => setProfile({...profile, phone: e.target.value})} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white transition-all" />
+                                                            <input type="text" value={profile.phone} onChange={(e) => setProfile({...profile, phone: e.target.value})} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white transition-all" disabled={isLoading} />
                                                         </div>
                                                     </div>
                                                     <div className="relative">
                                                         <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Localisation</label>
                                                         <div className="relative">
                                                             <MapPin size={16} className="absolute top-3 left-3 text-slate-400" />
-                                                            <input type="text" value={profile.location} onChange={(e) => setProfile({...profile, location: e.target.value})} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white transition-all" />
+                                                            <input type="text" value={profile.location} onChange={(e) => setProfile({...profile, location: e.target.value})} className="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white transition-all" disabled={isLoading} />
                                                         </div>
                                                     </div>
                                                 </div>
@@ -315,11 +389,21 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                     <h2 className="text-2xl font-bold text-slate-800 dark:text-white mb-2">Sécurité du compte</h2>
                                     <p className="text-slate-500 dark:text-slate-400">Gérez vos mots de passe et accès.</p>
                                 </div>
-                                <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-xl border border-amber-100 dark:border-amber-900/50 flex items-start gap-3">
-                                    <Lock size={20} className="text-amber-600 dark:text-amber-400 mt-0.5" />
-                                    <div>
-                                        <h4 className="font-bold text-amber-800 dark:text-amber-300 text-sm">Mot de passe</h4>
-                                        <p className="text-sm text-amber-700 dark:text-amber-400 mt-1">Pour changer votre mot de passe, veuillez contacter l'administrateur système ou utiliser la procédure de récupération sur la page de connexion.</p>
+                                <div className="bg-amber-50 dark:bg-amber-900/20 p-6 rounded-xl border border-amber-100 dark:border-amber-900/50 flex flex-col sm:flex-row items-start gap-4">
+                                    <div className="p-3 bg-amber-100 dark:bg-amber-900/40 rounded-full text-amber-600 dark:text-amber-400">
+                                        <Lock size={24} />
+                                    </div>
+                                    <div className="flex-1">
+                                        <h4 className="font-bold text-amber-800 dark:text-amber-300 text-base">Mot de passe</h4>
+                                        <p className="text-sm text-amber-700 dark:text-amber-400 mt-1 mb-4">
+                                            Vous ne pouvez pas changer votre mot de passe directement ici. Vous pouvez demander un lien de réinitialisation qui sera envoyé à votre adresse email <strong>{profile.email}</strong>.
+                                        </p>
+                                        <button 
+                                            onClick={handlePasswordReset}
+                                            className="px-4 py-2 bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors text-sm font-semibold shadow-sm"
+                                        >
+                                            Envoyer un email de réinitialisation
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -338,53 +422,53 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                         <Database size={18} /> État du stockage
                                     </h4>
                                     <p className="text-sm text-blue-700 dark:text-blue-400 mb-4">
-                                        Cette application utilise une base de données locale (LocalStorage) pour sauvegarder vos modifications.
+                                        Cette application utilise le stockage local pour le mode hors-ligne et la réactivité instantanée, synchronisé avec Firestore.
                                     </p>
-                                    <div className="flex gap-4 text-xs font-mono text-blue-600 dark:text-blue-400">
-                                        <span>Partenaires: {localStorage.getItem('db_partners')?.length ? 'OK' : 'Mock'}</span>
-                                        <span>Conducteurs: {localStorage.getItem('db_drivers')?.length ? 'OK' : 'Mock'}</span>
-                                    </div>
                                 </div>
 
                                 <div className="pt-6 border-t border-slate-200 dark:border-slate-700">
                                     <h3 className="font-bold text-red-600 mb-2">Zone de Danger</h3>
-                                    <p className="text-sm text-slate-500 mb-4">La réinitialisation effacera tous les nouveaux ajouts et restaurera les données de démonstration.</p>
+                                    <p className="text-sm text-slate-500 mb-4">
+                                        La réinitialisation effacera le cache local. Les données réelles stockées sur le serveur (Firestore) ne seront PAS affectées, mais vous devrez recharger les données.
+                                    </p>
                                     <button 
                                         onClick={handleResetDatabase}
                                         className="px-4 py-2 border border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900/30 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
                                     >
-                                        <Trash2 size={16} /> Réinitialiser la Base de Données
+                                        <Trash2 size={16} /> Vider le cache local
                                     </button>
                                 </div>
                             </div>
                         )}
 
-                        {/* Footer Actions (Visible on all tabs) */}
-                        <div className="mt-auto p-6 border-t border-slate-100 dark:border-slate-700/50 bg-slate-50/50 dark:bg-slate-900/20 flex justify-end gap-3 rounded-b-2xl">
-                            <button className="px-5 py-2.5 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700 border border-transparent hover:border-slate-200 dark:hover:border-slate-600 rounded-xl font-medium transition-all">
-                                Annuler
-                            </button>
-                            <button 
-                                onClick={handleSave} 
-                                disabled={isLoading}
-                                className={`px-6 py-2.5 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-900/20 hover:bg-blue-700 active:scale-95 transition-all flex items-center gap-2 ${isLoading ? 'opacity-70 cursor-wait' : ''}`}
-                            >
-                                {isLoading ? (
-                                    <>
-                                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-                                        Enregistrement...
-                                    </>
-                                ) : showSuccess ? (
-                                    <>
-                                        <Check size={18} /> Enregistré !
-                                    </>
-                                ) : (
-                                    <>
-                                        <Save size={18} /> Enregistrer
-                                    </>
-                                )}
-                            </button>
-                        </div>
+                        {/* Footer Actions (Visible on profile tab mostly, logic handled per component) */}
+                        {activeTab === 'profile' && (
+                            <div className="mt-auto p-6 border-t border-slate-100 dark:border-slate-700/50 bg-slate-50/50 dark:bg-slate-900/20 flex justify-end gap-3 rounded-b-2xl">
+                                <button className="px-5 py-2.5 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700 border border-transparent hover:border-slate-200 dark:hover:border-slate-600 rounded-xl font-medium transition-all">
+                                    Annuler
+                                </button>
+                                <button 
+                                    onClick={handleSave} 
+                                    disabled={isLoading}
+                                    className={`px-6 py-2.5 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-900/20 hover:bg-blue-700 active:scale-95 transition-all flex items-center gap-2 ${isLoading ? 'opacity-70 cursor-wait' : ''}`}
+                                >
+                                    {isLoading ? (
+                                        <>
+                                            <Loader2 size={18} className="animate-spin" />
+                                            Enregistrement...
+                                        </>
+                                    ) : showSuccess ? (
+                                        <>
+                                            <Check size={18} /> Enregistré !
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Save size={18} /> Enregistrer
+                                        </>
+                                    )}
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>

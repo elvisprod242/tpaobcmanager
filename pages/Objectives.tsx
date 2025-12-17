@@ -1,14 +1,20 @@
-
 import React, { useState } from 'react';
 import { Plus, Edit2, Trash2, ShieldCheck, Target, BarChart2, AlertTriangle } from 'lucide-react';
 import { Objectif, Partenaire, Invariant, UserRole } from '../types';
-import { mockObjectifs } from '../services/mockData';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormSelect } from '../components/ui/FormElements';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
 
-export const Objectives = ({ selectedPartnerId, partners, invariants, userRole }: { selectedPartnerId: string, partners: Partenaire[], invariants: Invariant[], userRole: UserRole }) => {
-    const [objectives, setObjectives] = useState<Objectif[]>(mockObjectifs);
+interface ObjectivesProps {
+    selectedPartnerId: string;
+    partners: Partenaire[];
+    invariants: Invariant[];
+    objectives: Objectif[];
+    setObjectives: React.Dispatch<React.SetStateAction<Objectif[]>>;
+    userRole: UserRole;
+}
+
+export const Objectives = ({ selectedPartnerId, partners, invariants, objectives, setObjectives, userRole }: ObjectivesProps) => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [viewMode, setViewMode] = useState<ViewMode>('grid');
@@ -256,7 +262,7 @@ export const Objectives = ({ selectedPartnerId, partners, invariants, userRole }
                         <FormInput label="Chapitre / Catégorie" value={formData.chapitre} onChange={(e:any) => setFormData({...formData, chapitre: e.target.value})} placeholder="Ex: Sécurité Routière" disabled={isReadOnly} />
                         
                         <div className="grid grid-cols-2 gap-4">
-                            <FormInput label="Valeur Cible" type="number" value={formData.cible} onChange={(e:any) => setFormData({...formData, cible: parseFloat(e.target.value)})} disabled={isReadOnly} />
+                            <FormInput label="Valeur Cible" type="number" value={formData.cible} onChange={(e:any) => setFormData({...formData, cible: parseFloat(e.target.value) || 0})} disabled={isReadOnly} />
                             <FormInput label="Unité" value={formData.unite} onChange={(e:any) => setFormData({...formData, unite: e.target.value})} placeholder="Ex: % conformité" disabled={isReadOnly} />
                         </div>
                         

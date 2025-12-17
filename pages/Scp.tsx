@@ -1,8 +1,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { Search, Printer, AlertCircle, TrendingDown, User, Gavel, AlertTriangle, AlertOctagon, ChevronDown, CheckCircle, XCircle, ShieldCheck } from 'lucide-react';
-import { Partenaire, Conducteur, Infraction, AppView, UserRole } from '../types';
-import { mockConducteurs, mockInfractions, mockRapports, mockInvariants, mockCleObcList, mockScpConfigurations } from '../services/mockData';
+import { Partenaire, Conducteur, Infraction, AppView, UserRole, Rapport, Invariant, ScpConfiguration, CleObc } from '../types';
 import { isDriverLinkedToPartner, getInfractionSeverity } from '../utils/helpers';
 
 interface ScpProps {
@@ -11,9 +10,15 @@ interface ScpProps {
     globalYear: string;
     onChangeView?: (view: AppView) => void;
     userRole: UserRole;
+    infractions: Infraction[];
+    reports: Rapport[];
+    drivers: Conducteur[];
+    invariants: Invariant[];
+    scpConfigs: ScpConfiguration[];
+    keys: CleObc[];
 }
 
-export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, userRole }: ScpProps) => {
+export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, userRole, infractions, reports, drivers, invariants, scpConfigs, keys }: ScpProps) => {
     const [selectedDriverId, setSelectedDriverId] = useState<string>('');
     const [filterText, setFilterText] = useState('');
     
@@ -22,28 +27,28 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
 
     // 1. Filtrer les conducteurs disponibles selon le partenaire sélectionné
     const availableDrivers = useMemo(() => {
-        return mockConducteurs.filter(c => {
-            const matchesPartner = isDriverLinkedToPartner(c, selectedPartnerId, mockCleObcList);
+        return drivers.filter(c => {
+            const matchesPartner = isDriverLinkedToPartner(c, selectedPartnerId, keys);
             return matchesPartner;
         });
-    }, [selectedPartnerId]);
+    }, [selectedPartnerId, drivers, keys]);
 
     // 2. Récupérer les infractions du conducteur sélectionné pour l'année en cours
     const driverInfractions = useMemo(() => {
         if (!selectedDriverId) return [];
 
-        return mockInfractions.filter(inf => {
+        return infractions.filter(inf => {
             const infDate = new Date(inf.date);
             // Vérifier l'année
             if (infDate.getFullYear() !== currentYear) return false;
 
             // Vérifier le conducteur via le rapport lié
-            const report = mockRapports.find(r => r.id === inf.rapports_id);
+            const report = reports.find(r => r.id === inf.rapports_id);
             if (!report) return false; // Si pas de rapport, on ignore (sécurité)
             
             return report.conducteur_id === selectedDriverId;
         }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-    }, [selectedDriverId, currentYear]);
+    }, [selectedDriverId, currentYear, infractions, reports]);
 
     // 3. Calculs des points (Dynamique via Helper)
     const stats = useMemo(() => {
@@ -51,7 +56,7 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
         
         let pointsLost = 0;
         driverInfractions.forEach(inf => {
-            const severity = getInfractionSeverity(inf, mockRapports, mockInvariants, mockScpConfigurations);
+            const severity = getInfractionSeverity(inf, reports, invariants, scpConfigs);
             pointsLost += severity.points;
         });
 
@@ -63,13 +68,13 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
             remainingPoints: totalPointsStart - safePointsLost,
             totalInfractions: driverInfractions.length
         };
-    }, [driverInfractions]);
+    }, [driverInfractions, reports, invariants, scpConfigs]);
 
     // 4. Filtrage de la liste des infractions via la barre de recherche
     const filteredInfractionsList = useMemo(() => {
         return driverInfractions.filter(inf => {
-            const report = mockRapports.find(r => r.id === inf.rapports_id);
-            const invariant = report?.invariant_id ? mockInvariants.find(i => i.id === report.invariant_id) : null;
+            const report = reports.find(r => r.id === inf.rapports_id);
+            const invariant = report?.invariant_id ? invariants.find(i => i.id === report.invariant_id) : null;
             
             const searchStr = `
                 ${inf.type_infraction} 
@@ -79,16 +84,16 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
             
             return searchStr.includes(filterText.toLowerCase());
         });
-    }, [driverInfractions, filterText]);
+    }, [driverInfractions, filterText, reports, invariants]);
 
     const handlePrint = () => {
         window.print();
     };
 
     const getInvariantTitle = (rapportId: string) => {
-        const report = mockRapports.find(r => r.id === rapportId);
+        const report = reports.find(r => r.id === rapportId);
         if (!report || !report.invariant_id) return 'Non spécifié';
-        const invariant = mockInvariants.find(inv => inv.id === report.invariant_id);
+        const invariant = invariants.find(inv => inv.id === report.invariant_id);
         return invariant ? invariant.titre : 'Non spécifié';
     };
 
@@ -221,7 +226,6 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
                                     <th className="px-6 py-4">Date</th>
                                     <th className="px-6 py-4">Invariant Violé</th>
                                     <th className="px-6 py-4">Type Infraction</th>
-                                    {/* Colonne Catégorie supprimée et fusionnée */}
                                     <th className="px-6 py-4 text-center">Points Perdus (Est.)</th>
                                     <th className="px-6 py-4">Sanction Appliquée</th>
                                     <th className="px-6 py-4 text-center">Statut</th>
@@ -229,7 +233,7 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
                             </thead>
                             <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
                                 {filteredInfractionsList.map(inf => {
-                                    const severity = getInfractionSeverity(inf, mockRapports, mockInvariants, mockScpConfigurations);
+                                    const severity = getInfractionSeverity(inf, reports, invariants, scpConfigs);
                                     const invariantTitle = getInvariantTitle(inf.rapports_id);
                                     
                                     return (

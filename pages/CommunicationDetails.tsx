@@ -1,18 +1,19 @@
-
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Video, Radio, Calendar, User, BookOpen, Save } from 'lucide-react';
 import { CommunicationPlan, CommunicationExecution, UserRole } from '../types';
-import { mockCommunicationPlans, mockCommunicationExecutions } from '../services/mockData';
 import { FormInput, FormSelect } from '../components/ui/FormElements';
 
 interface CommunicationDetailsProps {
     planId: string;
+    plans: CommunicationPlan[];
+    executions: CommunicationExecution[];
+    setExecutions: React.Dispatch<React.SetStateAction<CommunicationExecution[]>>;
     onBack: () => void;
     userRole: UserRole;
 }
 
-export const CommunicationDetails = ({ planId, onBack, userRole }: CommunicationDetailsProps) => {
-    const plan = mockCommunicationPlans.find(p => p.id === planId);
+export const CommunicationDetails = ({ planId, plans, executions, setExecutions, onBack, userRole }: CommunicationDetailsProps) => {
+    const plan = plans.find(p => p.id === planId);
     
     // Récupérer l'exécution liée ou créer une structure vide
     const [execution, setExecution] = useState<Partial<CommunicationExecution>>({
@@ -26,7 +27,7 @@ export const CommunicationDetails = ({ planId, onBack, userRole }: Communication
     const isReadOnly = userRole === 'directeur';
 
     useEffect(() => {
-        const existingExecution = mockCommunicationExecutions.find(e => e.planning_communication_id === planId);
+        const existingExecution = executions.find(e => e.planning_communication_id === planId);
         if (existingExecution) {
             setExecution(existingExecution);
         } else if (plan) {
@@ -37,12 +38,24 @@ export const CommunicationDetails = ({ planId, onBack, userRole }: Communication
                 canal: ''
             });
         }
-    }, [planId, plan]);
+    }, [planId, plan, executions]);
 
     const handleSave = () => {
-        // Simulation de sauvegarde
-        // Dans une vraie app, on ferait un appel API ou on mettrait à jour le store global
-        alert("Détails de la communication enregistrés !");
+        setExecutions(prev => {
+            const index = prev.findIndex(e => e.planning_communication_id === planId);
+            const newItem = { 
+                ...execution, 
+                id: execution.id || `exec_${Date.now()}` 
+            } as CommunicationExecution;
+
+            if (index >= 0) {
+                const newArr = [...prev];
+                newArr[index] = newItem;
+                return newArr;
+            } else {
+                return [...prev, newItem];
+            }
+        });
         setIsEditing(false);
     };
 

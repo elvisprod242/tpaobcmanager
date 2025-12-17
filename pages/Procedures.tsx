@@ -1,13 +1,20 @@
+
 import React, { useState, useMemo } from 'react';
-import { Search, Upload, Trash2, CheckSquare, Square, Eye, Download, FileText, File, CheckCircle, Image as ImageIcon, X, ArrowLeft, ExternalLink, AlertTriangle } from 'lucide-react';
+import { Search, Upload, Trash2, CheckSquare, Square, Eye, Download, FileText, File, CheckCircle, Image as ImageIcon, ArrowLeft, ExternalLink, AlertTriangle, Loader2 } from 'lucide-react';
 import { Procedure, UserRole } from '../types';
-import { mockProcedures } from '../services/mockData';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
 import { Modal } from '../components/ui/Modal';
 import { FormInput } from '../components/ui/FormElements';
+import { storageService } from '../services/storage';
 
-export const Procedures = ({ selectedPartnerId, userRole }: { selectedPartnerId: string, userRole: UserRole }) => {
-    const [procedures, setProcedures] = useState<Procedure[]>(mockProcedures);
+interface ProceduresProps {
+    selectedPartnerId: string;
+    procedures: Procedure[];
+    setProcedures: (data: Procedure[]) => void;
+    userRole: UserRole;
+}
+
+export const Procedures = ({ selectedPartnerId, procedures, setProcedures, userRole }: ProceduresProps) => {
     const [viewMode, setViewMode] = useState<ViewMode>('grid');
     const [filter, setFilter] = useState('');
     const [selectedProcedures, setSelectedProcedures] = useState<Set<string>>(new Set());
@@ -15,6 +22,7 @@ export const Procedures = ({ selectedPartnerId, userRole }: { selectedPartnerId:
     // Modal Ajout
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [formData, setFormData] = useState<Partial<Procedure>>({ nom: '', file: '', partenaire_id: '', date: new Date().toISOString().split('T')[0] });
+    const [isUploading, setIsUploading] = useState(false);
     
     // Modal Suppression
     const [deleteAction, setDeleteAction] = useState<{ type: 'single' | 'bulk', id?: string } | null>(null);
@@ -63,10 +71,10 @@ export const Procedures = ({ selectedPartnerId, userRole }: { selectedPartnerId:
         if (!deleteAction) return;
 
         if (deleteAction.type === 'bulk') {
-            setProcedures(prev => prev.filter(p => !selectedProcedures.has(p.id)));
+            setProcedures(procedures.filter(p => !selectedProcedures.has(p.id)));
             setSelectedProcedures(new Set());
         } else if (deleteAction.type === 'single' && deleteAction.id) {
-            setProcedures(prev => prev.filter(p => p.id !== deleteAction.id));
+            setProcedures(procedures.filter(p => p.id !== deleteAction.id));
             if (selectedProcedures.has(deleteAction.id)) {
                 const newSelected = new Set(selectedProcedures);
                 newSelected.delete(deleteAction.id);
@@ -81,21 +89,38 @@ export const Procedures = ({ selectedPartnerId, userRole }: { selectedPartnerId:
     const handleOpenModal = () => {
         setFormData({ nom: '', file: '', partenaire_id: selectedPartnerId !== 'all' ? selectedPartnerId : '', date: new Date().toISOString().split('T')[0] });
         setIsModalOpen(true);
+        setIsUploading(false);
     };
 
-    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
             const file = e.target.files[0];
             const extension = file.name.split('.').pop()?.toLowerCase() || 'pdf';
-            const objectUrl = URL.createObjectURL(file);
-            setFormData(prev => ({ ...prev, file: file.name, type: extension, url: objectUrl }));
+            
+            setIsUploading(true);
+            try {
+                // Upload vers Firebase Storage
+                const url = await storageService.uploadFile(file, 'procedures');
+                
+                setFormData(prev => ({ 
+                    ...prev, 
+                    file: file.name, 
+                    type: extension, 
+                    url: url 
+                }));
+            } catch (error) {
+                console.error("Erreur upload:", error);
+                alert("Erreur lors de l'upload du fichier");
+            } finally {
+                setIsUploading(false);
+            }
         }
     };
 
     const handleSave = () => {
         if (!formData.nom || !formData.file) return;
-        setProcedures(prev => [
-            ...prev, 
+        setProcedures([
+            ...procedures, 
             { 
                 id: `proc_${Date.now()}`, 
                 ...formData, 
@@ -321,7 +346,16 @@ export const Procedures = ({ selectedPartnerId, userRole }: { selectedPartnerId:
             <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="Ajouter une procédure" footer={
                  <>
                     <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg">Annuler</button>
-                    {!isReadOnly && <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Enregistrer</button>}
+                    {!isReadOnly && (
+                        <button 
+                            onClick={handleSave} 
+                            disabled={isUploading}
+                            className={`px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 ${isUploading ? 'opacity-70 cursor-wait' : ''}`}
+                        >
+                            {isUploading && <Loader2 size={16} className="animate-spin" />}
+                            {isUploading ? 'Upload en cours...' : 'Enregistrer'}
+                        </button>
+                    )}
                  </>
              }>
                  <div className="space-y-4">
@@ -330,7 +364,12 @@ export const Procedures = ({ selectedPartnerId, userRole }: { selectedPartnerId:
                          <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Fichier</label>
                          <div className="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl p-6 text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer relative">
                              <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleFileUpload} accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.png" disabled={isReadOnly} />
-                             {formData.file ? (
+                             {isUploading ? (
+                                <div className="text-blue-600 flex flex-col items-center">
+                                    <Loader2 size={32} className="animate-spin mb-2" />
+                                    <p className="text-sm font-medium">Upload en cours...</p>
+                                </div>
+                             ) : formData.file ? (
                                  <div className="flex items-center justify-center gap-2 text-blue-600 font-medium">
                                      <CheckCircle size={20} /> {formData.file}
                                  </div>

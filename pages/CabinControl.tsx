@@ -1,13 +1,22 @@
+
 import React, { useState, useMemo } from 'react';
-import { Search, Plus, Trash2, Edit2, CheckSquare, Square, ClipboardCheck, Upload, Download, Eye, FileText, CheckCircle, Image as ImageIcon, Calendar, ChevronDown, X, ExternalLink, AlertTriangle } from 'lucide-react';
+import { Search, Plus, Trash2, Edit2, CheckSquare, Square, ClipboardCheck, Upload, Download, Eye, FileText, CheckCircle, Image as ImageIcon, Calendar, ChevronDown, X, ExternalLink, AlertTriangle, Loader2 } from 'lucide-react';
 import { ControleCabine, Partenaire, UserRole } from '../types';
-import { mockControleCabine } from '../services/mockData';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormSelect } from '../components/ui/FormElements';
+import { storageService } from '../services/storage';
 
-export const CabinControl = ({ selectedPartnerId, partners, globalYear, userRole }: { selectedPartnerId: string, partners: Partenaire[], globalYear: string, userRole: UserRole }) => {
-    const [controls, setControls] = useState<ControleCabine[]>(mockControleCabine);
+interface CabinControlProps {
+    selectedPartnerId: string;
+    partners: Partenaire[];
+    globalYear: string;
+    controls: ControleCabine[];
+    setControls: React.Dispatch<React.SetStateAction<ControleCabine[]>>;
+    userRole: UserRole;
+}
+
+export const CabinControl = ({ selectedPartnerId, partners, globalYear, controls, setControls, userRole }: CabinControlProps) => {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [formData, setFormData] = useState<Partial<ControleCabine>>({ 
@@ -19,6 +28,7 @@ export const CabinControl = ({ selectedPartnerId, partners, globalYear, userRole
     
     // État pour le Drag & Drop
     const [dragActive, setDragActive] = useState(false);
+    const [isUploading, setIsUploading] = useState(false);
     
     // État Suppression
     const [deleteAction, setDeleteAction] = useState<{ type: 'single' | 'bulk', id?: string } | null>(null);
@@ -99,6 +109,7 @@ export const CabinControl = ({ selectedPartnerId, partners, globalYear, userRole
 
     const handleOpenModal = (ctrl?: ControleCabine) => {
         setDragActive(false);
+        setIsUploading(false);
         if (ctrl) {
             setEditingId(ctrl.id);
             setFormData(ctrl);
@@ -114,6 +125,25 @@ export const CabinControl = ({ selectedPartnerId, partners, globalYear, userRole
         setIsModalOpen(true);
     };
 
+    const processFile = async (file: File) => {
+        setIsUploading(true);
+        try {
+            // Upload Firebase
+            const url = await storageService.uploadFile(file, 'controles_cabine');
+            
+            setFormData(prev => ({ 
+                ...prev, 
+                file: file.name, 
+                url: url 
+            }));
+        } catch (error) {
+            console.error("Erreur upload:", error);
+            alert("Erreur lors de l'envoi du fichier.");
+        } finally {
+            setIsUploading(false);
+        }
+    };
+
     // Gestion Drag & Drop
     const handleDrag = (e: React.DragEvent) => {
         e.preventDefault();
@@ -125,22 +155,18 @@ export const CabinControl = ({ selectedPartnerId, partners, globalYear, userRole
         }
     };
 
-    const handleDrop = (e: React.DragEvent) => {
+    const handleDrop = async (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
         setDragActive(false);
         if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-            const file = e.dataTransfer.files[0];
-            const objectUrl = URL.createObjectURL(file);
-            setFormData(prev => ({ ...prev, file: file.name, url: objectUrl }));
+            await processFile(e.dataTransfer.files[0]);
         }
     };
 
-    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
-            const file = e.target.files[0];
-            const objectUrl = URL.createObjectURL(file);
-            setFormData(prev => ({ ...prev, file: file.name, url: objectUrl }));
+            await processFile(e.target.files[0]);
         }
     };
 
@@ -342,4 +368,154 @@ export const CabinControl = ({ selectedPartnerId, partners, globalYear, userRole
 
              <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingId ? 'Modifier Contrôle' : 'Nouveau Contrôle'} footer={
                  <>
-                    <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors
+                    <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors">Annuler</button>
+                    {!isReadOnly && (
+                        <button 
+                            onClick={handleSave} 
+                            disabled={isUploading}
+                            className={`px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 ${isUploading ? 'opacity-70 cursor-wait' : ''}`}
+                        >
+                            {isUploading && <Loader2 size={16} className="animate-spin" />}
+                            {isUploading ? 'Envoi...' : 'Enregistrer'}
+                        </button>
+                    )}
+                 </>
+             }>
+                 <div className="space-y-4">
+                     <FormInput label="Date" type="date" value={formData.date} onChange={(e:any) => setFormData({...formData, date: e.target.value})} disabled={isReadOnly} />
+                     <FormSelect label="Partenaire" value={formData.partenaire_id} onChange={(e:any) => setFormData({...formData, partenaire_id: e.target.value})} options={[{value: '', label: 'Sélectionner...'}, ...partners.map(p => ({value: p.id, label: p.nom}))]} disabled={selectedPartnerId !== 'all' || isReadOnly} />
+                     
+                     <div className="space-y-2">
+                         <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300">Commentaire</label>
+                         <textarea 
+                            className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white h-24 resize-none transition-all" 
+                            value={formData.commentaire} 
+                            onChange={(e:any) => setFormData({...formData, commentaire: e.target.value})} 
+                            placeholder="Observations..."
+                            disabled={isReadOnly}
+                        />
+                        {!isReadOnly && (
+                            <div className="flex flex-wrap gap-2 mt-2">
+                                {quickComments.map(tag => (
+                                    <button 
+                                        key={tag} 
+                                        onClick={() => addQuickComment(tag)}
+                                        className="text-xs px-2 py-1 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                                    >
+                                        + {tag}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                     </div>
+
+                     {!isReadOnly && (
+                         <div 
+                            className={`border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer relative ${dragActive ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/10' : 'border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800/50'}`}
+                            onDragEnter={handleDrag}
+                            onDragLeave={handleDrag}
+                            onDragOver={handleDrag}
+                            onDrop={handleDrop}
+                        >
+                             <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleFileUpload} accept="image/*,.pdf" disabled={isUploading} />
+                             {isUploading ? (
+                                <div className="text-blue-600 flex flex-col items-center">
+                                    <Loader2 size={32} className="animate-spin mb-2" />
+                                    <p className="text-sm font-medium">Upload en cours...</p>
+                                </div>
+                             ) : formData.file ? (
+                                 <div className="flex flex-col items-center justify-center gap-2 text-blue-600 dark:text-blue-400 font-medium animate-fade-in">
+                                     <CheckCircle size={32} /> 
+                                     <span className="text-sm truncate max-w-[250px]">{formData.file}</span>
+                                     <span className="text-xs text-slate-500">Cliquez pour changer</span>
+                                 </div>
+                             ) : (
+                                 <div className="text-slate-500 dark:text-slate-400">
+                                     <Upload size={32} className="mx-auto mb-2 opacity-50" />
+                                     <p className="font-medium">Glissez une photo ou un fichier ici</p>
+                                     <p className="text-xs mt-1">ou cliquez pour parcourir</p>
+                                 </div>
+                             )}
+                         </div>
+                     )}
+                 </div>
+             </Modal>
+
+             {/* Modal de Confirmation de Suppression */}
+             <Modal
+                isOpen={!!deleteAction}
+                onClose={() => setDeleteAction(null)}
+                title="Confirmation"
+                size="default"
+                footer={
+                    <>
+                        <button onClick={() => setDeleteAction(null)} className="flex-1 px-4 py-2.5 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl font-semibold">Annuler</button>
+                        <button onClick={confirmDelete} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2">
+                            <Trash2 size={18} /> Confirmer
+                        </button>
+                    </>
+                }
+            >
+                <div className="flex flex-col items-center text-center p-6 space-y-4">
+                    <div className="p-4 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-full animate-bounce-short">
+                        <AlertTriangle size={48} strokeWidth={1.5} />
+                    </div>
+                    <div>
+                        <h3 className="text-lg font-bold text-slate-800 dark:text-white">Supprimer le contrôle ?</h3>
+                        <p className="text-slate-500 dark:text-slate-400 max-w-sm mx-auto mt-2">
+                            {deleteAction?.type === 'bulk' 
+                                ? `Vous allez supprimer ${selectedControls.size} contrôle(s).` 
+                                : "Ce document sera définitivement effacé."}
+                        </p>
+                    </div>
+                </div>
+            </Modal>
+
+            {/* Modal de Visualisation Optimisée */}
+            <Modal 
+                isOpen={!!viewingItem} 
+                onClose={() => setViewingItem(null)} 
+                title={viewingItem?.name || "Visualisation"}
+                size="large"
+                footer={
+                    <div className="flex justify-between w-full">
+                        <button onClick={() => setViewingItem(null)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg">Fermer</button>
+                        {viewingItem?.url && (
+                            <a href={viewingItem.url} download={viewingItem.name} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2">
+                                <Download size={16} /> Télécharger le fichier
+                            </a>
+                        )}
+                    </div>
+                }
+            >
+                {viewingItem && (
+                    <div className="w-full h-[75vh] bg-slate-100 dark:bg-slate-900 rounded-lg overflow-hidden flex flex-col items-center justify-center relative">
+                        {isImage(viewingItem.name) ? (
+                            <div className="w-full h-full flex items-center justify-center p-4 bg-slate-900/5 dark:bg-black/20">
+                                <img 
+                                    src={viewingItem.url} 
+                                    alt={viewingItem.name} 
+                                    className="max-w-full max-h-full object-contain rounded shadow-lg" 
+                                />
+                            </div>
+                        ) : (
+                            // Fallback pour PDF ou autres
+                            <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-4 p-8 text-center">
+                                <div className="p-4 bg-slate-200 dark:bg-slate-800 rounded-full">
+                                    <FileText size={48} className="text-slate-400" />
+                                </div>
+                                <div>
+                                    <p className="font-semibold text-lg text-slate-700 dark:text-slate-200">Aperçu non disponible</p>
+                                    <p className="text-sm mt-1">Ce type de fichier ne peut pas être prévisualisé directement.</p>
+                                </div>
+                                <a href={viewingItem.url} download={viewingItem.name} className="mt-2 px-6 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-medium transition-colors shadow-lg shadow-blue-900/20">
+                                    Télécharger pour voir
+                                </a>
+                            </div>
+                        )}
+                    </div>
+                )}
+            </Modal>
+        </div>
+    );
+};

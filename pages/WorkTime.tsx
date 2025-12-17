@@ -1,11 +1,10 @@
-
 import React, { useState, useMemo } from 'react';
 import { Calendar, User, AlertCircle, ChevronDown, Activity, Edit2, Plus, Save, Printer, FileText, FileSpreadsheet } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { TempsTravail, Partenaire, Rapport } from '../types';
-import { mockTempsTravail, mockRapports, mockConducteurs } from '../services/mockData';
+import { mockRapports, mockConducteurs } from '../services/mockData';
 import { Modal } from '../components/ui/Modal';
 import { FormInput } from '../components/ui/FormElements';
 
@@ -20,7 +19,6 @@ const timeStringToSeconds = (timeStr: string): number => {
 const secondsToTimeString = (totalSeconds: number): string => {
     const h = Math.floor(totalSeconds / 3600);
     const m = Math.floor((totalSeconds % 3600) / 60);
-    const s = Math.round(totalSeconds % 60);
     return `${String(h).padStart(2, '0')}h${String(m).padStart(2, '0')}`;
 };
 
@@ -39,14 +37,19 @@ const getWeekNumber = (d: Date): number => {
     return Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
 };
 
-export const WorkTime = ({ selectedPartnerId, partners, globalYear }: { selectedPartnerId: string, partners: Partenaire[], globalYear: string }) => {
+interface WorkTimeProps {
+    selectedPartnerId: string;
+    partners: Partenaire[];
+    globalYear: string;
+    analyses: TempsTravail[];
+    setAnalyses: (data: TempsTravail[]) => void;
+}
+
+export const WorkTime = ({ selectedPartnerId, partners, globalYear, analyses, setAnalyses }: WorkTimeProps) => {
     // Utilisation de l'année globale, ou l'année courante par défaut si non sélectionnée
     const currentYear = globalYear ? parseInt(globalYear) : new Date().getFullYear();
     const [selectedMonth, setSelectedMonth] = useState<string>(new Date().getMonth().toString());
     const [selectedDriverId, setSelectedDriverId] = useState<string>('');
-    
-    // État pour gérer les analyses localement (permet l'édition)
-    const [analyses, setAnalyses] = useState<TempsTravail[]>(mockTempsTravail);
     
     // État pour le modal
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -123,18 +126,17 @@ export const WorkTime = ({ selectedPartnerId, partners, globalYear }: { selected
     const handleSaveAnalysis = () => {
         if (!currentAnalysis.rapports_id) return;
 
-        setAnalyses(prev => {
-            const index = prev.findIndex(a => a.rapports_id === currentAnalysis.rapports_id);
-            const newEntry = currentAnalysis as TempsTravail;
-            
-            if (index >= 0) {
-                const newArr = [...prev];
-                newArr[index] = newEntry;
-                return newArr;
-            } else {
-                return [...prev, newEntry];
-            }
-        });
+        // Mise à jour de la liste complète des analyses via la prop
+        const index = analyses.findIndex(a => a.rapports_id === currentAnalysis.rapports_id);
+        const newEntry = currentAnalysis as TempsTravail;
+        
+        if (index >= 0) {
+            const newArr = [...analyses];
+            newArr[index] = newEntry;
+            setAnalyses(newArr);
+        } else {
+            setAnalyses([...analyses, newEntry]);
+        }
         setIsModalOpen(false);
     };
 
@@ -292,7 +294,7 @@ export const WorkTime = ({ selectedPartnerId, partners, globalYear }: { selected
                 const dateStr = new Date().toLocaleDateString('fr-FR');
                 doc.text(`Généré le ${dateStr} par TPA Manager`, data.settings.margin.left, doc.internal.pageSize.height - 10);
                 
-                const pageStr = 'Page ' + doc.internal.getNumberOfPages();
+                const pageStr = 'Page ' + doc.getNumberOfPages();
                 doc.text(pageStr, doc.internal.pageSize.width - data.settings.margin.right - doc.getTextWidth(pageStr), doc.internal.pageSize.height - 10);
             }
         });

@@ -1,15 +1,19 @@
 
 import React, { useState, useMemo } from 'react';
-import { Search, Plus, Trash2, Edit2, CheckSquare, Square, Briefcase, Save, AlertTriangle } from 'lucide-react';
+import { Search, Plus, Trash2, Edit2, CheckSquare, Square, Briefcase, Save, AlertTriangle, Loader2 } from 'lucide-react';
 import { Partenaire, UserRole } from '../types';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
 import { Modal } from '../components/ui/Modal';
 import { FormInput } from '../components/ui/FormElements';
+import { api } from '../services/api';
+import { useNotification } from '../contexts/NotificationContext';
 
-export const Partners = ({ partners, setPartners, userRole }: { partners: Partenaire[], setPartners: any, userRole: UserRole }) => {
+export const Partners = ({ partners, setPartners, userRole }: { partners: Partenaire[], setPartners: React.Dispatch<React.SetStateAction<Partenaire[]>>, userRole: UserRole }) => {
+    const { addNotification } = useNotification();
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [formData, setFormData] = useState({ nom: '', actif: true });
+    const [isSaving, setIsSaving] = useState(false);
     
     // Permissions
     const isReadOnly = userRole === 'directeur';
@@ -44,21 +48,40 @@ export const Partners = ({ partners, setPartners, userRole }: { partners: Parten
     const requestDelete = (id: string) => setDeleteAction({ type: 'single', id });
     const requestBulkDelete = () => setDeleteAction({ type: 'bulk' });
 
-    const confirmDelete = () => {
+    const confirmDelete = async () => {
         if (!deleteAction) return;
+        setIsSaving(true);
 
-        if (deleteAction.type === 'single' && deleteAction.id) {
-            setPartners((prev: Partenaire[]) => prev.filter(p => p.id !== deleteAction.id));
-            if (selectedPartners.has(deleteAction.id)) {
-                const newSelected = new Set(selectedPartners);
-                newSelected.delete(deleteAction.id);
-                setSelectedPartners(newSelected);
+        try {
+            if (deleteAction.type === 'single' && deleteAction.id) {
+                // Appel API Optimisé
+                await api.deletePartenaire(deleteAction.id);
+                
+                // Mise à jour locale
+                setPartners((prev: Partenaire[]) => prev.filter(p => p.id !== deleteAction.id));
+                if (selectedPartners.has(deleteAction.id)) {
+                    const newSelected = new Set(selectedPartners);
+                    newSelected.delete(deleteAction.id);
+                    setSelectedPartners(newSelected);
+                }
+                addNotification('success', 'Partenaire supprimé avec succès.');
+            } else if (deleteAction.type === 'bulk') {
+                // Pour le bulk, on boucle sur les suppressions unitaires
+                const idsToDelete = Array.from(selectedPartners);
+                await Promise.all(idsToDelete.map(id => api.deletePartenaire(id)));
+
+                // Mise à jour locale
+                setPartners((prev: Partenaire[]) => prev.filter(p => !selectedPartners.has(p.id)));
+                setSelectedPartners(new Set());
+                addNotification('success', `${idsToDelete.length} partenaires supprimés.`);
             }
-        } else if (deleteAction.type === 'bulk') {
-            setPartners((prev: Partenaire[]) => prev.filter(p => !selectedPartners.has(p.id)));
-            setSelectedPartners(new Set());
+        } catch (error) {
+            console.error("Erreur lors de la suppression", error);
+            addNotification('error', "Une erreur est survenue lors de la suppression.");
+        } finally {
+            setIsSaving(false);
+            setDeleteAction(null);
         }
-        setDeleteAction(null);
     };
 
     const handleOpenModal = (partner?: Partenaire) => {
@@ -72,13 +95,34 @@ export const Partners = ({ partners, setPartners, userRole }: { partners: Parten
         setIsModalOpen(true);
     };
 
-    const handleSave = () => {
+    const handleSave = async () => {
         if (!formData.nom) return;
-        setPartners((prev: Partenaire[]) => {
-            const newItem = { id: editingId || `part_${Date.now()}`, ...formData };
-            return editingId ? prev.map(p => p.id === editingId ? newItem : p) : [...prev, newItem];
-        });
-        setIsModalOpen(false);
+        setIsSaving(true);
+
+        const newPartenaire: Partenaire = {
+            id: editingId || `part_${Date.now()}`,
+            ...formData
+        };
+
+        try {
+            if (editingId) {
+                // Update Optimisé
+                await api.updatePartenaire(newPartenaire);
+                setPartners(prev => prev.map(p => p.id === editingId ? newPartenaire : p));
+                addNotification('success', 'Partenaire mis à jour.');
+            } else {
+                // Ajout Optimisé
+                await api.addPartenaire(newPartenaire);
+                setPartners(prev => [...prev, newPartenaire]);
+                addNotification('success', 'Nouveau partenaire ajouté.');
+            }
+            setIsModalOpen(false);
+        } catch (error) {
+            console.error("Erreur sauvegarde", error);
+            addNotification('error', "Erreur lors de la sauvegarde du partenaire.");
+        } finally {
+            setIsSaving(false);
+        }
     };
 
     return (
@@ -207,12 +251,19 @@ export const Partners = ({ partners, setPartners, userRole }: { partners: Parten
                 footer={
                     <>
                         <button onClick={() => setIsModalOpen(false)} className="flex-1 px-4 py-2.5 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300 font-semibold rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">Annuler</button>
-                        <button onClick={handleSave} className="flex-1 px-4 py-2.5 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-900/20 transition-all flex items-center justify-center gap-2"><Save size={18} /> Enregistrer</button>
+                        <button 
+                            onClick={handleSave} 
+                            disabled={isSaving}
+                            className="flex-1 px-4 py-2.5 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 shadow-lg shadow-blue-900/20 transition-all flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-wait"
+                        >
+                            {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />} 
+                            {isSaving ? 'Enregistrement...' : 'Enregistrer'}
+                        </button>
                     </>
                 }
             >
                 <div className="space-y-4">
-                    <FormInput label="Nom de l'entreprise" value={formData.nom} onChange={(e: any) => setFormData({...formData, nom: e.target.value})} placeholder="Ex: Transport Logistics" />
+                    <FormInput label="Nom de l'entreprise" value={formData.nom} onChange={(e: any) => setFormData({...formData, nom: e.target.value})} placeholder="Ex: Transport Logistics" disabled={isSaving} />
                     <div className="flex items-center gap-3 p-4 bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-100 dark:border-slate-700">
                          <input 
                             type="checkbox" 
@@ -220,6 +271,7 @@ export const Partners = ({ partners, setPartners, userRole }: { partners: Parten
                             checked={formData.actif} 
                             onChange={(e) => setFormData({...formData, actif: e.target.checked})}
                             className="w-5 h-5 rounded text-blue-600 focus:ring-blue-500 border-gray-300"
+                            disabled={isSaving}
                         />
                         <label htmlFor="actif" className="font-medium text-slate-700 dark:text-slate-300 select-none">Partenaire Actif</label>
                     </div>
@@ -235,8 +287,13 @@ export const Partners = ({ partners, setPartners, userRole }: { partners: Parten
                 footer={
                     <>
                         <button onClick={() => setDeleteAction(null)} className="flex-1 px-4 py-2.5 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl font-semibold">Annuler</button>
-                        <button onClick={confirmDelete} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2">
-                            <Trash2 size={18} /> Confirmer
+                        <button 
+                            onClick={confirmDelete} 
+                            disabled={isSaving}
+                            className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2 disabled:opacity-70"
+                        >
+                            {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />} 
+                            Confirmer
                         </button>
                     </>
                 }
