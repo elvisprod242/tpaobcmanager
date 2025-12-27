@@ -227,16 +227,20 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear, reports, infract
 
         const body = tableData.filter(r => !r.isSeparator).map(row => {
             if (viewPeriod === 'month') {
-                return [row.label, row.valeur, row.objectif, row.commentaire];
+                return [
+                    String(row.label || ''), 
+                    String(row.valeur || 0), 
+                    String(row.objectif || ''), 
+                    String(row.commentaire || '')
+                ];
             } else {
                 const isOk = row.isInvariant ? row.valeur === 0 : true; 
-                // Correction: Gestion des valeurs undefined pour satisfaire le typage TS de jspdf-autotable
                 return [
-                    row.label, 
-                    row.valeur, 
-                    row.objectif_annuel || '', 
+                    String(row.label || ''), 
+                    String(row.valeur || 0), 
+                    String(row.objectif_annuel || ''), 
                     isOk ? "OK" : "NOK", 
-                    row.analyse_cause || ''
+                    String(row.analyse_cause || '')
                 ];
             }
         });

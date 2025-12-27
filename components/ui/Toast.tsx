@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { X, CheckCircle, AlertCircle, AlertTriangle, Info } from 'lucide-react';
 import { Notification, useNotification } from '../../contexts/NotificationContext';
 
-const ToastItem = ({ notification }: { notification: Notification }) => {
+const ToastItem: React.FC<{ notification: Notification }> = ({ notification }) => {
     const { removeNotification } = useNotification();
     const [isVisible, setIsVisible] = useState(false);
 

@@ -2,9 +2,7 @@
 import React, { useState } from 'react';
 import { Mail, Lock, User, ArrowRight, Eye, EyeOff, Truck, AlertCircle, Shield, Check, CheckCircle } from 'lucide-react';
 import { User as UserType } from '../types';
-import { auth } from '../services/firebase';
 import { api } from '../services/api';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 
 interface AuthProps {
     onLogin: (user: UserType) => void;
@@ -17,7 +15,6 @@ export const Auth = ({ onLogin }: AuthProps) => {
     const [error, setError] = useState('');
     const [justFilled, setJustFilled] = useState(false);
 
-    // État unifié pour le formulaire
     const [formData, setFormData] = useState({
         email: '',
         password: '',
@@ -40,111 +37,106 @@ export const Auth = ({ onLogin }: AuthProps) => {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        
-        if (!formData.email || !formData.password) {
-            setError("L'email et le mot de passe sont requis.");
-            return;
-        }
-        if (!isLogin && !formData.name) {
-            setError("Le nom complet est requis pour l'inscription.");
-            return;
-        }
-
         setError('');
         setIsLoading(true);
 
+        // Simulation de délai réseau
+        await new Promise(resolve => setTimeout(resolve, 800));
+
         try {
-            if (!auth) {
-                throw new Error("Le service d'authentification Firebase n'est pas initialisé. Vérifiez votre configuration.");
-            }
-
             if (isLogin) {
-                // --- CONNEXION ---
-                const userCredential = await signInWithEmailAndPassword(auth, formData.email, formData.password);
-                const uid = userCredential.user.uid;
-
-                // Récupération du profil complet (rôle, nom, prénom) depuis Firestore
-                const userProfile = await api.getUserProfile(uid);
-
-                if (userProfile) {
-                    onLogin(userProfile);
-                } else {
-                    // Fallback si l'utilisateur existe dans Auth mais pas dans Firestore (Cas rare ou import manuel)
-                    // On crée un profil basique par sécurité ou on refuse
-                    const fallbackUser: UserType = {
-                        id: uid,
-                        email: userCredential.user.email || '',
-                        username: userCredential.user.email?.split('@')[0] || 'user',
-                        nom: 'Utilisateur',
-                        prenom: '',
-                        role: 'obc' // Rôle par défaut de sécurité
+                // --- LOGIN LOCAL SIMULÉ ---
+                // Vérification des comptes de démo par défaut
+                if (formData.email === 'directeur@tpa.com' && formData.password === 'directeur') {
+                    const mockUser: UserType = {
+                        id: 'demo_dir_1',
+                        email: formData.email,
+                        username: 'directeur',
+                        nom: 'Général',
+                        prenom: 'Directeur',
+                        role: 'directeur',
+                        avatarUrl: ''
                     };
-                    onLogin(fallbackUser);
+                    onLogin(mockUser);
+                    return;
+                }
+                
+                if (formData.email === 'obc@tpa.com' && formData.password === 'obc123') {
+                    const mockUser: UserType = {
+                        id: 'demo_obc_1',
+                        email: formData.email,
+                        username: 'obc',
+                        nom: 'Manager',
+                        prenom: 'OBC',
+                        role: 'obc',
+                        avatarUrl: ''
+                    };
+                    onLogin(mockUser);
+                    return;
+                }
+
+                // Vérification contre la base locale (utilisateurs inscrits)
+                // Note: Dans un vrai système, il faudrait hacher le mot de passe. Ici, c'est une démo locale.
+                const usersStr = localStorage.getItem('db_users_auth');
+                const localUsers = usersStr ? JSON.parse(usersStr) : [];
+                const userFound = localUsers.find((u: any) => u.email === formData.email && u.password === formData.password);
+
+                if (userFound) {
+                    // Récupérer le profil complet via l'API
+                    const profile = await api.getUserProfile(userFound.id);
+                    if (profile) {
+                        onLogin(profile);
+                    } else {
+                        // Fallback si profil manquant
+                        onLogin({
+                            id: userFound.id,
+                            email: userFound.email,
+                            username: 'user',
+                            nom: 'Utilisateur',
+                            prenom: 'Local',
+                            role: 'obc'
+                        });
+                    }
+                } else {
+                    throw new Error("Email ou mot de passe incorrect.");
                 }
 
             } else {
-                // --- INSCRIPTION ---
-                const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
-                const uid = userCredential.user.uid;
+                // --- INSCRIPTION LOCALE ---
+                if (!formData.name || !formData.email || !formData.password) {
+                    throw new Error("Tous les champs sont requis.");
+                }
 
-                // Construction du profil utilisateur enrichi
+                const uid = `local_${Date.now()}`;
+                
+                // Sauvegarde Auth (Email/Pass)
+                const usersStr = localStorage.getItem('db_users_auth');
+                const localUsers = usersStr ? JSON.parse(usersStr) : [];
+                
+                if (localUsers.find((u: any) => u.email === formData.email)) {
+                    throw new Error("Cet email est déjà utilisé.");
+                }
+
+                localUsers.push({ id: uid, email: formData.email, password: formData.password });
+                localStorage.setItem('db_users_auth', JSON.stringify(localUsers));
+
+                // Sauvegarde Profil
                 const [prenom, ...nomParts] = formData.name.split(' ');
-                const nom = nomParts.join(' ');
-
                 const newUser: UserType = {
                     id: uid,
                     email: formData.email,
                     username: formData.name.toLowerCase().replace(/\s/g, ''),
-                    nom: nom || '',
+                    nom: nomParts.join(' ') || '',
                     prenom: prenom || formData.name,
-                    role: 'obc', // Rôle par défaut pour les nouveaux inscrits
+                    role: 'obc', // Par défaut
                     avatarUrl: ''
                 };
 
-                // Sauvegarde du profil dans Firestore (Collection 'users')
                 await api.createUserProfile(newUser);
-                
                 onLogin(newUser);
             }
-
         } catch (err: any) {
-            console.error("Erreur Auth:", err);
-
-            // --- FALLBACK MODE DÉMO ---
-            // Si l'authentification Firebase échoue pour les comptes de démo (car ils n'existent pas encore en base),
-            // on autorise l'accès en mode "Mock" pour permettre la visite.
-            const demoAccounts = ['directeur@tpa.com', 'obc@tpa.com'];
-            // Note: auth/invalid-credential remplace souvent user-not-found pour la sécurité
-            if (isLogin && demoAccounts.includes(formData.email) && (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password')) {
-                const isDirecteur = formData.email.includes('directeur');
-                const mockUser: UserType = {
-                    id: isDirecteur ? 'demo_dir_1' : 'demo_obc_1',
-                    email: formData.email,
-                    username: isDirecteur ? 'directeur' : 'obc',
-                    nom: isDirecteur ? 'Général' : 'Manager',
-                    prenom: isDirecteur ? 'Directeur' : 'OBC',
-                    role: isDirecteur ? 'directeur' : 'obc',
-                    avatarUrl: ''
-                };
-                
-                // Petit délai pour simuler
-                setTimeout(() => {
-                    console.warn("Passage en mode DÉMO (Fallback Auth) suite erreur Firebase");
-                    onLogin(mockUser);
-                }, 500);
-                return;
-            }
-
-            // Gestion des erreurs Firebase courantes
-            if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
-                setError("Email ou mot de passe incorrect.");
-            } else if (err.code === 'auth/email-already-in-use') {
-                setError("Cet email est déjà utilisé par un autre compte.");
-            } else if (err.code === 'auth/weak-password') {
-                setError("Le mot de passe doit contenir au moins 6 caractères.");
-            } else {
-                setError(err.message || "Une erreur de connexion est survenue.");
-            }
+            setError(err.message || "Une erreur est survenue.");
             setIsLoading(false);
         }
     };
@@ -168,16 +160,16 @@ export const Auth = ({ onLogin }: AuthProps) => {
                         </h1>
                         <p className="text-slate-500 dark:text-slate-400 mt-2 text-sm">
                             {isLogin 
-                                ? 'Connectez-vous pour gérer votre flotte.' 
-                                : 'Rejoignez la plateforme de référence pour la gestion de flotte.'}
+                                ? 'Mode Local : Connectez-vous pour gérer votre flotte.' 
+                                : 'Rejoignez la plateforme locale de gestion de flotte.'}
                         </p>
                     </div>
 
-                    {/* Hint Box for Demo Credentials (Facultatif, utile pour le test) */}
+                    {/* Hint Box for Demo Credentials */}
                     {isLogin && (
                         <div className={`bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-900/50 rounded-xl p-4 text-xs text-blue-800 dark:text-blue-300 space-y-3 transition-all ${justFilled ? 'ring-2 ring-blue-400 scale-[1.02]' : ''}`}>
                             <div className="flex items-center justify-between font-bold">
-                                <div className="flex items-center gap-2"><Shield size={14} /> Pré-remplir (Test) :</div>
+                                <div className="flex items-center gap-2"><Shield size={14} /> Pré-remplir (Test Local) :</div>
                                 {justFilled && <span className="flex items-center gap-1 text-green-600 dark:text-green-400"><Check size={14}/> Rempli</span>}
                             </div>
                             <div className="grid grid-cols-2 gap-3">
@@ -281,11 +273,6 @@ export const Auth = ({ onLogin }: AuthProps) => {
                                 <input type="checkbox" className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 border-slate-300" />
                                 <span className="text-sm text-slate-600 dark:text-slate-400 group-hover:text-slate-800 dark:group-hover:text-slate-200 transition-colors">Se souvenir de moi</span>
                             </label>
-                            {isLogin && (
-                                <button type="button" className="text-sm font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition-colors hover:underline">
-                                    Mot de passe oublié ?
-                                </button>
-                            )}
                         </div>
 
                         <button
@@ -348,17 +335,8 @@ export const Auth = ({ onLogin }: AuthProps) => {
                                     <CheckCircle size={20} />
                                 </div>
                                 <div>
-                                    <h3 className="font-bold text-lg">Suivi Télématique</h3>
-                                    <p className="text-sm text-slate-200 mt-1 leading-relaxed">Données en temps réel sur les conducteurs et véhicules pour une optimisation continue.</p>
-                                </div>
-                            </div>
-                            <div className="flex items-start gap-4 p-4 bg-white/10 backdrop-blur-md rounded-2xl border border-white/10 hover:bg-white/15 transition-colors">
-                                <div className="p-2 bg-blue-500/20 rounded-lg text-blue-300 mt-1">
-                                    <Shield size={20} />
-                                </div>
-                                <div>
-                                    <h3 className="font-bold text-lg">Gestion des Infractions</h3>
-                                    <p className="text-sm text-slate-200 mt-1 leading-relaxed">Suivi automatisé et génération de rapports SCP pour garantir la conformité.</p>
+                                    <h3 className="font-bold text-lg">Mode Local (Hors-Ligne)</h3>
+                                    <p className="text-sm text-slate-200 mt-1 leading-relaxed">Cette version fonctionne sans connexion serveur. Toutes vos données sont sauvegardées localement sur votre appareil.</p>
                                 </div>
                             </div>
                         </div>

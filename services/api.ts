@@ -4,231 +4,173 @@ import {
     mockPartenairesList, mockConducteurs, mockVehicules, mockRapports, mockInfractions, mockCleObcList, mockInvariants, mockEquipements,
     mockProcedures, mockControleCabine, mockCommunicationPlans, mockCommunicationExecutions, mockTempsTravail, mockTempsConduite, mockTempsRepos, mockScpConfigurations, mockObjectifs
 } from './mockData';
-import { db } from './firebase';
-import { collection, getDocs, doc, setDoc, writeBatch, updateDoc, deleteDoc, getDoc } from 'firebase/firestore';
 
-// Collections Firestore
+// Clés de stockage LocalStorage (Simulation de tables DB)
 const COLLECTIONS = {
-    PARTNERS: 'partenaires',
-    DRIVERS: 'conducteurs',
-    VEHICLES: 'vehicules',
-    REPORTS: 'rapports',
-    INFRACTIONS: 'infractions',
-    KEYS: 'cles_obc',
-    INVARIANTS: 'invariants',
-    EQUIPMENTS: 'equipements',
-    PROCEDURES: 'procedures',
-    CABIN_CONTROLS: 'controles_cabine',
-    COMM_PLANS: 'communication_plans',
-    COMM_EXECS: 'communication_executions',
-    WORK_ANALYSIS: 'analyse_temps_travail',
-    DRIVE_ANALYSIS: 'analyse_temps_conduite',
-    REST_ANALYSIS: 'analyse_temps_repos',
-    SCP_CONFIGS: 'scp_configurations',
-    OBJECTIVES: 'objectifs',
-    USERS: 'users' // Nouvelle collection pour les profils utilisateurs
+    PARTNERS: 'db_partenaires',
+    DRIVERS: 'db_conducteurs',
+    VEHICLES: 'db_vehicules',
+    REPORTS: 'db_rapports',
+    INFRACTIONS: 'db_infractions',
+    KEYS: 'db_cles_obc',
+    INVARIANTS: 'db_invariants',
+    EQUIPMENTS: 'db_equipements',
+    PROCEDURES: 'db_procedures',
+    CABIN_CONTROLS: 'db_controles_cabine',
+    COMM_PLANS: 'db_communication_plans',
+    COMM_EXECS: 'db_communication_executions',
+    WORK_ANALYSIS: 'db_analyse_temps_travail',
+    DRIVE_ANALYSIS: 'db_analyse_temps_conduite',
+    REST_ANALYSIS: 'db_analyse_temps_repos',
+    SCP_CONFIGS: 'db_scp_configurations',
+    OBJECTIVES: 'db_objectifs',
+    USERS: 'db_users'
 };
 
-// Variable globale pour désactiver Firebase si les permissions sont insuffisantes
-let isFirebaseAvailable = true;
+// --- Moteur de Base de Données Locale (LocalStorage Wrapper) ---
 
-/**
- * Charge une collection depuis Firestore.
- * Si la collection est vide ou inaccessible, retourne les données mock.
- */
-async function fetchCollection<T>(collectionName: string, mockData: T[]): Promise<T[]> {
-    if (!db || !isFirebaseAvailable) {
-        return mockData;
-    }
-
-    try {
-        const colRef = collection(db, collectionName);
-        const snapshot = await getDocs(colRef);
-
-        if (snapshot.empty && mockData.length > 0) {
-            console.log(`Collection ${collectionName} vide. Tentative d'initialisation (Seeding)...`);
-            try {
-                await seedCollection(collectionName, mockData);
-                return mockData;
-            } catch (seedError: any) {
-                console.warn(`Impossible d'initialiser ${collectionName}:`, seedError.message);
-                return mockData;
-            }
-        }
-
-        const data: T[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as T));
-        return data;
-    } catch (error: any) {
-        if (error.code === 'permission-denied' || error.message?.includes('Missing or insufficient permissions')) {
-            if (isFirebaseAvailable) {
-                console.warn(`⚠️ ACCÈS FIREBASE REFUSÉ pour ${collectionName}. Passage en mode DÉMO.`);
-                isFirebaseAvailable = false;
-            }
-        } else {
-            console.error(`Erreur chargement ${collectionName}:`, error);
-        }
-        return mockData;
-    }
-}
-
-/**
- * Sauvegarde une liste complète d'éléments dans Firestore (Legacy / Bulk).
- */
-async function saveCollection<T extends { id: string }>(collectionName: string, data: T[]): Promise<void> {
-    if (!db || !isFirebaseAvailable) return;
-
-    try {
-        const batch = writeBatch(db);
-        // Limite Firestore batch: 500 ops.
-        const safeData = data.slice(0, 450); 
-        
-        safeData.forEach(item => {
-            const docRef = doc(db, collectionName, item.id);
-            batch.set(docRef, item, { merge: true });
-        });
-
-        await batch.commit();
-        console.log(`Sauvegarde ${collectionName} réussie.`);
-    } catch (error: any) {
-        console.error(`Erreur sauvegarde ${collectionName}:`, error);
-    }
-}
-
-/**
- * Fonction utilitaire pour remplir la base initiale
- */
-async function seedCollection(collectionName: string, data: any[]) {
-    if (!db) return;
-    const batch = writeBatch(db);
-    data.slice(0, 450).forEach(item => {
-        const docRef = doc(db, collectionName, item.id);
-        batch.set(docRef, item);
-    });
-    await batch.commit();
-}
-
-// --- API Service Firestore ---
-
-export const api = {
-    // --- GESTION UTILISATEURS (Auth Profile) ---
-    getUserProfile: async (uid: string): Promise<User | null> => {
-        if (!db) return null;
+const LocalDB = {
+    // Lecture
+    get: <T>(key: string, defaultData: T[] = []): T[] => {
         try {
-            const docRef = doc(db, COLLECTIONS.USERS, uid);
-            const docSnap = await getDoc(docRef);
-            if (docSnap.exists()) {
-                return { id: docSnap.id, ...docSnap.data() } as User;
-            } else {
-                console.warn("Utilisateur authentifié mais profil introuvable dans 'users'.");
-                return null;
+            const stored = localStorage.getItem(key);
+            if (stored) {
+                return JSON.parse(stored);
             }
-        } catch (error) {
-            console.error("Erreur récupération profil utilisateur:", error);
-            return null;
+            // Initialisation avec Mock Data si vide (Seeding)
+            localStorage.setItem(key, JSON.stringify(defaultData));
+            return defaultData;
+        } catch (e) {
+            console.error(`Erreur lecture DB locale [${key}]`, e);
+            return defaultData;
         }
     },
 
-    createUserProfile: async (user: User) => {
-        if (!db) return;
+    // Écriture complète (pour les saves en masse ou updates)
+    set: <T>(key: string, data: T[]): void => {
         try {
-            await setDoc(doc(db, COLLECTIONS.USERS, user.id), user);
-            console.log("Profil utilisateur créé/mis à jour:", user.id);
-        } catch (error) {
-            console.error("Erreur création profil utilisateur:", error);
-            throw error;
+            localStorage.setItem(key, JSON.stringify(data));
+        } catch (e) {
+            console.error(`Erreur écriture DB locale [${key}]`, e);
+        }
+    },
+
+    // Ajout unitaire
+    add: <T>(key: string, item: T): void => {
+        const items = LocalDB.get<T>(key);
+        items.push(item);
+        LocalDB.set(key, items);
+    },
+
+    // Mise à jour unitaire (par ID)
+    update: <T extends { id: string }>(key: string, item: T): void => {
+        const items = LocalDB.get<T>(key);
+        const index = items.findIndex(i => i.id === item.id);
+        if (index !== -1) {
+            items[index] = item;
+            LocalDB.set(key, items);
+        }
+    },
+
+    // Suppression unitaire (par ID)
+    delete: <T extends { id: string }>(key: string, id: string): void => {
+        const items = LocalDB.get<T>(key);
+        const newItems = items.filter(i => i.id !== id);
+        LocalDB.set(key, newItems);
+    }
+};
+
+// --- API Service (Interface unifiée) ---
+
+export const api = {
+    // --- GESTION UTILISATEURS ---
+    getUserProfile: async (uid: string): Promise<User | null> => {
+        const users = LocalDB.get<User>(COLLECTIONS.USERS);
+        return users.find(u => u.id === uid) || null;
+    },
+
+    createUserProfile: async (user: User) => {
+        // Vérifie si existe déjà pour éviter doublons lors de l'inscription simulée
+        const users = LocalDB.get<User>(COLLECTIONS.USERS);
+        if (!users.find(u => u.id === user.id)) {
+            LocalDB.add(COLLECTIONS.USERS, user);
         }
     },
 
     updateUserProfile: async (user: Partial<User>) => {
-        if (!db || !user.id) return;
-        try {
-            const userRef = doc(db, COLLECTIONS.USERS, user.id);
-            // @ts-ignore
-            await updateDoc(userRef, user);
-            console.log("Profil mis à jour avec succès");
-        } catch (error) {
-            console.error("Erreur mise à jour profil:", error);
-            throw error;
+        if (!user.id) return;
+        const users = LocalDB.get<User>(COLLECTIONS.USERS);
+        const index = users.findIndex(u => u.id === user.id);
+        if (index !== -1) {
+            users[index] = { ...users[index], ...user };
+            LocalDB.set(COLLECTIONS.USERS, users);
         }
     },
 
-    // --- Données Principales ---
-    getPartenaires: () => fetchCollection<Partenaire>(COLLECTIONS.PARTNERS, mockPartenairesList),
-    savePartenaires: (data: Partenaire[]) => saveCollection(COLLECTIONS.PARTNERS, data),
-    
-    // Optimisation CRUD Partenaires
-    addPartenaire: async (partenaire: Partenaire) => {
-        if (!db || !isFirebaseAvailable) return;
-        try {
-            await setDoc(doc(db, COLLECTIONS.PARTNERS, partenaire.id), partenaire);
-            console.log("Partenaire ajouté avec succès");
-        } catch (e) { console.error("Erreur ajout partenaire", e); throw e; }
-    },
-    updatePartenaire: async (partenaire: Partenaire) => {
-        if (!db || !isFirebaseAvailable) return;
-        try {
-            // @ts-ignore
-            await updateDoc(doc(db, COLLECTIONS.PARTNERS, partenaire.id), partenaire);
-            console.log("Partenaire mis à jour avec succès");
-        } catch (e) { console.error("Erreur update partenaire", e); throw e; }
-    },
-    deletePartenaire: async (id: string) => {
-        if (!db || !isFirebaseAvailable) return;
-        try {
-            await deleteDoc(doc(db, COLLECTIONS.PARTNERS, id));
-            console.log("Partenaire supprimé avec succès");
-        } catch (e) { console.error("Erreur suppression partenaire", e); throw e; }
-    },
+    // --- Partenaires ---
+    getPartenaires: async () => LocalDB.get<Partenaire>(COLLECTIONS.PARTNERS, mockPartenairesList),
+    savePartenaires: async (data: Partenaire[]) => LocalDB.set(COLLECTIONS.PARTNERS, data),
+    addPartenaire: async (p: Partenaire) => LocalDB.add(COLLECTIONS.PARTNERS, p),
+    updatePartenaire: async (p: Partenaire) => LocalDB.update(COLLECTIONS.PARTNERS, p),
+    deletePartenaire: async (id: string) => LocalDB.delete(COLLECTIONS.PARTNERS, id),
 
-    getConducteurs: () => fetchCollection<Conducteur>(COLLECTIONS.DRIVERS, mockConducteurs),
-    saveConducteurs: (data: Conducteur[]) => saveCollection(COLLECTIONS.DRIVERS, data),
+    // --- Conducteurs ---
+    getConducteurs: async () => LocalDB.get<Conducteur>(COLLECTIONS.DRIVERS, mockConducteurs),
+    saveConducteurs: async (data: Conducteur[]) => LocalDB.set(COLLECTIONS.DRIVERS, data),
 
-    getVehicules: () => fetchCollection<Vehicule>(COLLECTIONS.VEHICLES, mockVehicules),
-    saveVehicules: (data: Vehicule[]) => saveCollection(COLLECTIONS.VEHICLES, data),
+    // --- Véhicules ---
+    getVehicules: async () => LocalDB.get<Vehicule>(COLLECTIONS.VEHICLES, mockVehicules),
+    saveVehicules: async (data: Vehicule[]) => LocalDB.set(COLLECTIONS.VEHICLES, data),
 
-    getRapports: () => fetchCollection<Rapport>(COLLECTIONS.REPORTS, mockRapports),
-    saveRapports: (data: Rapport[]) => saveCollection(COLLECTIONS.REPORTS, data),
+    // --- Rapports ---
+    getRapports: async () => LocalDB.get<Rapport>(COLLECTIONS.REPORTS, mockRapports),
+    saveRapports: async (data: Rapport[]) => LocalDB.set(COLLECTIONS.REPORTS, data),
 
-    getInfractions: () => fetchCollection<Infraction>(COLLECTIONS.INFRACTIONS, mockInfractions),
-    saveInfractions: (data: Infraction[]) => saveCollection(COLLECTIONS.INFRACTIONS, data),
+    // --- Infractions ---
+    getInfractions: async () => LocalDB.get<Infraction>(COLLECTIONS.INFRACTIONS, mockInfractions),
+    saveInfractions: async (data: Infraction[]) => LocalDB.set(COLLECTIONS.INFRACTIONS, data),
 
-    getCleObc: () => fetchCollection<CleObc>(COLLECTIONS.KEYS, mockCleObcList),
-    saveCleObc: (data: CleObc[]) => saveCollection(COLLECTIONS.KEYS, data),
+    // --- Clés OBC ---
+    getCleObc: async () => LocalDB.get<CleObc>(COLLECTIONS.KEYS, mockCleObcList),
+    saveCleObc: async (data: CleObc[]) => LocalDB.set(COLLECTIONS.KEYS, data),
 
-    getInvariants: () => fetchCollection<Invariant>(COLLECTIONS.INVARIANTS, mockInvariants),
-    saveInvariants: (data: Invariant[]) => saveCollection(COLLECTIONS.INVARIANTS, data),
+    // --- Invariants ---
+    getInvariants: async () => LocalDB.get<Invariant>(COLLECTIONS.INVARIANTS, mockInvariants),
+    saveInvariants: async (data: Invariant[]) => LocalDB.set(COLLECTIONS.INVARIANTS, data),
 
-    getEquipements: () => fetchCollection<Equipement>(COLLECTIONS.EQUIPMENTS, mockEquipements),
-    saveEquipements: (data: Equipement[]) => saveCollection(COLLECTIONS.EQUIPMENTS, data),
+    // --- Equipements ---
+    getEquipements: async () => LocalDB.get<Equipement>(COLLECTIONS.EQUIPMENTS, mockEquipements),
+    saveEquipements: async (data: Equipement[]) => LocalDB.set(COLLECTIONS.EQUIPMENTS, data),
 
-    // --- Nouvelles Collections ---
-    
-    getProcedures: () => fetchCollection<Procedure>(COLLECTIONS.PROCEDURES, mockProcedures),
-    saveProcedures: (data: Procedure[]) => saveCollection(COLLECTIONS.PROCEDURES, data),
+    // --- Procedures ---
+    getProcedures: async () => LocalDB.get<Procedure>(COLLECTIONS.PROCEDURES, mockProcedures),
+    saveProcedures: async (data: Procedure[]) => LocalDB.set(COLLECTIONS.PROCEDURES, data),
 
-    getControleCabine: () => fetchCollection<ControleCabine>(COLLECTIONS.CABIN_CONTROLS, mockControleCabine),
-    saveControleCabine: (data: ControleCabine[]) => saveCollection(COLLECTIONS.CABIN_CONTROLS, data),
+    // --- Contrôle Cabine ---
+    getControleCabine: async () => LocalDB.get<ControleCabine>(COLLECTIONS.CABIN_CONTROLS, mockControleCabine),
+    saveControleCabine: async (data: ControleCabine[]) => LocalDB.set(COLLECTIONS.CABIN_CONTROLS, data),
 
-    getCommunicationPlans: () => fetchCollection<CommunicationPlan>(COLLECTIONS.COMM_PLANS, mockCommunicationPlans),
-    saveCommunicationPlans: (data: CommunicationPlan[]) => saveCollection(COLLECTIONS.COMM_PLANS, data),
+    // --- Communication ---
+    getCommunicationPlans: async () => LocalDB.get<CommunicationPlan>(COLLECTIONS.COMM_PLANS, mockCommunicationPlans),
+    saveCommunicationPlans: async (data: CommunicationPlan[]) => LocalDB.set(COLLECTIONS.COMM_PLANS, data),
 
-    getCommunicationExecutions: () => fetchCollection<CommunicationExecution>(COLLECTIONS.COMM_EXECS, mockCommunicationExecutions),
-    saveCommunicationExecutions: (data: CommunicationExecution[]) => saveCollection(COLLECTIONS.COMM_EXECS, data),
+    getCommunicationExecutions: async () => LocalDB.get<CommunicationExecution>(COLLECTIONS.COMM_EXECS, mockCommunicationExecutions),
+    saveCommunicationExecutions: async (data: CommunicationExecution[]) => LocalDB.set(COLLECTIONS.COMM_EXECS, data),
 
-    // Analyses Temps
-    getTempsTravail: () => fetchCollection<TempsTravail>(COLLECTIONS.WORK_ANALYSIS, mockTempsTravail),
-    saveTempsTravail: (data: TempsTravail[]) => saveCollection(COLLECTIONS.WORK_ANALYSIS, data),
+    // --- Analyses Temps ---
+    getTempsTravail: async () => LocalDB.get<TempsTravail>(COLLECTIONS.WORK_ANALYSIS, mockTempsTravail),
+    saveTempsTravail: async (data: TempsTravail[]) => LocalDB.set(COLLECTIONS.WORK_ANALYSIS, data),
 
-    getTempsConduite: () => fetchCollection<TempsConduite>(COLLECTIONS.DRIVE_ANALYSIS, mockTempsConduite),
-    saveTempsConduite: (data: TempsConduite[]) => saveCollection(COLLECTIONS.DRIVE_ANALYSIS, data),
+    getTempsConduite: async () => LocalDB.get<TempsConduite>(COLLECTIONS.DRIVE_ANALYSIS, mockTempsConduite),
+    saveTempsConduite: async (data: TempsConduite[]) => LocalDB.set(COLLECTIONS.DRIVE_ANALYSIS, data),
 
-    getTempsRepos: () => fetchCollection<TempsRepos>(COLLECTIONS.REST_ANALYSIS, mockTempsRepos),
-    saveTempsRepos: (data: TempsRepos[]) => saveCollection(COLLECTIONS.REST_ANALYSIS, data),
+    getTempsRepos: async () => LocalDB.get<TempsRepos>(COLLECTIONS.REST_ANALYSIS, mockTempsRepos),
+    saveTempsRepos: async (data: TempsRepos[]) => LocalDB.set(COLLECTIONS.REST_ANALYSIS, data),
 
-    // Configs
-    getScpConfigurations: () => fetchCollection<ScpConfiguration>(COLLECTIONS.SCP_CONFIGS, mockScpConfigurations),
-    saveScpConfigurations: (data: ScpConfiguration[]) => saveCollection(COLLECTIONS.SCP_CONFIGS, data),
+    // --- Configs & Objectifs ---
+    getScpConfigurations: async () => LocalDB.get<ScpConfiguration>(COLLECTIONS.SCP_CONFIGS, mockScpConfigurations),
+    saveScpConfigurations: async (data: ScpConfiguration[]) => LocalDB.set(COLLECTIONS.SCP_CONFIGS, data),
 
-    getObjectifs: () => fetchCollection<Objectif>(COLLECTIONS.OBJECTIVES, mockObjectifs),
-    saveObjectifs: (data: Objectif[]) => saveCollection(COLLECTIONS.OBJECTIVES, data),
+    getObjectifs: async () => LocalDB.get<Objectif>(COLLECTIONS.OBJECTIVES, mockObjectifs),
+    saveObjectifs: async (data: Objectif[]) => LocalDB.set(COLLECTIONS.OBJECTIVES, data),
 };

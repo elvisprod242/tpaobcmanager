@@ -5,8 +5,6 @@ import { FormInput } from '../components/ui/FormElements';
 import { User } from '../types';
 import { storageService } from '../services/storage';
 import { api } from '../services/api';
-import { auth } from '../services/firebase';
-import { sendPasswordResetEmail } from 'firebase/auth';
 
 interface SettingsProps {
     isDarkMode: boolean;
@@ -28,7 +26,7 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
         firstName: currentUser?.prenom || '',
         lastName: currentUser?.nom || '',
         email: currentUser?.email || '',
-        phone: '+33 6 00 00 00 00', // Placeholder si non présent dans le type User
+        phone: '+33 6 00 00 00 00', 
         role: currentUser?.role === 'admin' ? 'Administrateur Principal' : (currentUser?.role === 'directeur' ? 'Directeur Général' : 'OBC / Manager'),
         department: 'Direction Logistique',
         bio: 'Gestionnaire de flotte sur la plateforme TPA.',
@@ -36,7 +34,6 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
         avatarUrl: currentUser?.avatarUrl || ''
     });
 
-    // Mise à jour si currentUser change (ex: rechargement)
     useEffect(() => {
         if (currentUser) {
             setProfile(prev => ({
@@ -55,14 +52,12 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
         setErrorMessage('');
 
         try {
-            // Sauvegarde dans Firestore via l'API
+            // Sauvegarde dans la DB locale
             const updatedUser: Partial<User> = {
                 id: currentUser.id,
                 nom: profile.lastName,
                 prenom: profile.firstName,
                 avatarUrl: profile.avatarUrl,
-                // Note: On ne sauvegarde pas department, bio, phone, location car ils ne sont pas dans le type User pour l'instant
-                // Mais l'API accepte Partial<User>, donc ça n'effacera pas les autres champs s'ils existent en base
             };
 
             await api.updateUserProfile(updatedUser);
@@ -85,7 +80,7 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
     };
 
     const handleResetDatabase = () => {
-        if (window.confirm("ATTENTION : Cette action efface les données mises en cache localement (Mock). Les données réelles sur Firestore ne seront pas touchées. Continuer ?")) {
+        if (window.confirm("ATTENTION : Cette action efface TOUTES les données locales (Conducteurs, Véhicules, Rapports...). L'application reviendra à l'état initial (Mock Data). Continuer ?")) {
             localStorage.clear();
             window.location.reload();
         }
@@ -97,7 +92,7 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
 
         setIsUploading(true);
         try {
-            // Upload vers Firebase Storage
+            // Upload simulé via service de stockage
             const url = await storageService.uploadFile(file, `avatars/${currentUser.id}`);
             setProfile(prev => ({ ...prev, avatarUrl: url }));
         } catch (error) {
@@ -118,19 +113,7 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
     };
 
     const handlePasswordReset = async () => {
-        if (!profile.email) return;
-        if (!auth) {
-            setErrorMessage("Service d'authentification indisponible.");
-            return;
-        }
-        
-        try {
-            await sendPasswordResetEmail(auth, profile.email);
-            alert(`Un email de réinitialisation a été envoyé à ${profile.email}`);
-        } catch (error: any) {
-            console.error("Erreur reset password:", error);
-            setErrorMessage(error.message || "Erreur lors de l'envoi de l'email.");
-        }
+        alert("En mode local, la gestion des mots de passe n'est pas active. Contactez l'administrateur système.");
     };
 
     const tabs = [
@@ -190,30 +173,16 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
 
                 {/* Content Area */}
                 <div className="flex-1 space-y-6">
-                    {/* Header Mobile Only (Select) */}
-                    <div className="lg:hidden bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 mb-6">
-                        <select 
-                            value={activeTab} 
-                            onChange={(e) => setActiveTab(e.target.value as any)}
-                            className="w-full p-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-600 rounded-lg text-slate-700 dark:text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                        >
-                            {tabs.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                        </select>
-                    </div>
-
-                    {/* Content Card */}
                     <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 min-h-[600px] flex flex-col relative overflow-hidden">
                         
                         {/* Tab: Profil */}
                         {activeTab === 'profile' && (
                             <div className="flex-1 animate-fade-in">
-                                {/* Banner Hero */}
                                 <div className="h-32 w-full bg-gradient-to-r from-blue-600 to-indigo-700 relative">
                                     <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
                                 </div>
 
                                 <div className="px-6 lg:px-10 pb-10">
-                                    {/* Avatar & Header Action */}
                                     <div className="relative flex flex-col sm:flex-row items-end sm:items-center justify-between -mt-12 mb-8 gap-4">
                                         <div className="relative group cursor-pointer" onClick={triggerFileInput}>
                                             <div className="w-32 h-32 rounded-full bg-white dark:bg-slate-800 p-1.5 shadow-xl">
@@ -225,13 +194,11 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                                     ) : (
                                                         <span className="text-4xl font-bold text-slate-400 dark:text-slate-500">{profile.firstName ? profile.firstName[0] : ''}{profile.lastName ? profile.lastName[0] : ''}</span>
                                                     )}
-                                                    {/* Overlay Edit */}
                                                     <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-[2px]">
                                                         <Camera size={28} className="text-white" />
                                                     </div>
                                                 </div>
                                             </div>
-                                            {/* Bouton Reset Image */}
                                             {profile.avatarUrl && (
                                                 <button 
                                                     onClick={(e) => { e.stopPropagation(); handleRemoveImage(); }}
@@ -263,10 +230,7 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                         </div>
                                     )}
 
-                                    {/* Formulaire Grid */}
                                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                                        
-                                        {/* Section Identité */}
                                         <div className="space-y-5">
                                             <div className="flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-700">
                                                 <UserIcon size={18} className="text-blue-600 dark:text-blue-400" />
@@ -277,7 +241,6 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                                 <FormInput label="Nom" value={profile.lastName} onChange={(e: any) => setProfile({...profile, lastName: e.target.value})} disabled={isLoading} />
                                             </div>
                                             <div className="relative">
-                                                <FormInput label="Bio / À propos" value="" onChange={() => {}} className="hidden" /> {/* Spacer hack or custom wrapper needed */}
                                                 <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Bio / À propos</label>
                                                 <textarea 
                                                     className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white transition-all h-28 resize-none"
@@ -288,7 +251,6 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                             </div>
                                         </div>
 
-                                        {/* Section Professionnel & Contact */}
                                         <div className="space-y-5">
                                             <div className="flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-700">
                                                 <Briefcase size={18} className="text-blue-600 dark:text-blue-400" />
@@ -394,15 +356,15 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                         <Lock size={24} />
                                     </div>
                                     <div className="flex-1">
-                                        <h4 className="font-bold text-amber-800 dark:text-amber-300 text-base">Mot de passe</h4>
+                                        <h4 className="font-bold text-amber-800 dark:text-amber-300 text-base">Mode Local</h4>
                                         <p className="text-sm text-amber-700 dark:text-amber-400 mt-1 mb-4">
-                                            Vous ne pouvez pas changer votre mot de passe directement ici. Vous pouvez demander un lien de réinitialisation qui sera envoyé à votre adresse email <strong>{profile.email}</strong>.
+                                            En mode déconnecté, la gestion des mots de passe est simplifiée. Pour modifier un accès, veuillez réinitialiser la base de données ou contacter l'administrateur.
                                         </p>
                                         <button 
                                             onClick={handlePasswordReset}
-                                            className="px-4 py-2 bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors text-sm font-semibold shadow-sm"
+                                            className="px-4 py-2 bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors text-sm font-semibold shadow-sm opacity-50 cursor-not-allowed"
                                         >
-                                            Envoyer un email de réinitialisation
+                                            Réinitialisation désactivée
                                         </button>
                                     </div>
                                 </div>
@@ -414,7 +376,7 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                             <div className="p-6 lg:p-10 space-y-8 animate-fade-in flex-1">
                                 <div>
                                     <h2 className="text-2xl font-bold text-slate-800 dark:text-white mb-2">Base de Données Locale</h2>
-                                    <p className="text-slate-500 dark:text-slate-400">Gestion des données stockées dans le navigateur (Persistence).</p>
+                                    <p className="text-slate-500 dark:text-slate-400">Gestion des données stockées dans le navigateur (LocalStorage).</p>
                                 </div>
 
                                 <div className="p-5 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-100 dark:border-blue-900/50">
@@ -422,26 +384,25 @@ export const Settings = ({ isDarkMode, toggleTheme, currentUser, onLogout }: Set
                                         <Database size={18} /> État du stockage
                                     </h4>
                                     <p className="text-sm text-blue-700 dark:text-blue-400 mb-4">
-                                        Cette application utilise le stockage local pour le mode hors-ligne et la réactivité instantanée, synchronisé avec Firestore.
+                                        L'application fonctionne en mode 100% local. Toutes les modifications sont enregistrées instantanément dans votre navigateur.
                                     </p>
                                 </div>
 
                                 <div className="pt-6 border-t border-slate-200 dark:border-slate-700">
                                     <h3 className="font-bold text-red-600 mb-2">Zone de Danger</h3>
                                     <p className="text-sm text-slate-500 mb-4">
-                                        La réinitialisation effacera le cache local. Les données réelles stockées sur le serveur (Firestore) ne seront PAS affectées, mais vous devrez recharger les données.
+                                        La réinitialisation effacera toutes les données que vous avez créées ou modifiées et rechargera les données de démonstration par défaut.
                                     </p>
                                     <button 
                                         onClick={handleResetDatabase}
                                         className="px-4 py-2 border border-red-200 text-red-600 hover:bg-red-50 dark:border-red-900/30 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
                                     >
-                                        <Trash2 size={16} /> Vider le cache local
+                                        <Trash2 size={16} /> Réinitialiser la base de données
                                     </button>
                                 </div>
                             </div>
                         )}
 
-                        {/* Footer Actions (Visible on profile tab mostly, logic handled per component) */}
                         {activeTab === 'profile' && (
                             <div className="mt-auto p-6 border-t border-slate-100 dark:border-slate-700/50 bg-slate-50/50 dark:bg-slate-900/20 flex justify-end gap-3 rounded-b-2xl">
                                 <button className="px-5 py-2.5 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700 border border-transparent hover:border-slate-200 dark:hover:border-slate-600 rounded-xl font-medium transition-all">

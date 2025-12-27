@@ -67,7 +67,7 @@ export const Partners = ({ partners, setPartners, userRole }: { partners: Parten
                 addNotification('success', 'Partenaire supprimé avec succès.');
             } else if (deleteAction.type === 'bulk') {
                 // Pour le bulk, on boucle sur les suppressions unitaires
-                const idsToDelete = Array.from(selectedPartners);
+                const idsToDelete = Array.from(selectedPartners) as string[];
                 await Promise.all(idsToDelete.map(id => api.deletePartenaire(id)));
 
                 // Mise à jour locale
