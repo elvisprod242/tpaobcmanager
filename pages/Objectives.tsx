@@ -1,9 +1,12 @@
-import React, { useState } from 'react';
-import { Plus, Edit2, Trash2, ShieldCheck, Target, BarChart2, AlertTriangle } from 'lucide-react';
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { Plus, Edit2, Trash2, ShieldCheck, Target, BarChart2, AlertTriangle, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Objectif, Partenaire, Invariant, UserRole } from '../types';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormSelect } from '../components/ui/FormElements';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
+import { api } from '../services/api';
+import { useNotification } from '../contexts/NotificationContext';
 
 interface ObjectivesProps {
     selectedPartnerId: string;
@@ -15,9 +18,24 @@ interface ObjectivesProps {
 }
 
 export const Objectives = ({ selectedPartnerId, partners, invariants, objectives, setObjectives, userRole }: ObjectivesProps) => {
+    const { addNotification } = useNotification();
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
-    const [viewMode, setViewMode] = useState<ViewMode>('grid');
+    const [isSaving, setIsSaving] = useState(false);
+    
+    // Initialisation : Liste pour Tablette/PC (>= 768px), Grille pour Mobile
+    const [viewMode, setViewMode] = useState<ViewMode>(() => window.innerWidth >= 768 ? 'list' : 'grid');
+
+    // Pagination
+    const [currentPage, setCurrentPage] = useState(1);
+    const [itemsPerPage, setItemsPerPage] = useState(10);
+
+    useEffect(() => {
+        const handleResize = () => { if (window.innerWidth >= 768) setViewMode('list'); else setViewMode('grid'); };
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
+
     const [formData, setFormData] = useState<Partial<Objectif>>({ 
         chapitre: '', 
         cible: 0, 
@@ -31,54 +49,95 @@ export const Objectives = ({ selectedPartnerId, partners, invariants, objectives
     // État Suppression
     const [deleteAction, setDeleteAction] = useState<{ type: 'single', id: string } | null>(null);
 
-    const filteredObjectives = objectives.filter(o => selectedPartnerId === 'all' || o.partenaire_id === selectedPartnerId);
+    const filteredObjectives = useMemo(() => {
+        return objectives.filter(o => selectedPartnerId === 'all' || o.partenaire_id === selectedPartnerId);
+    }, [objectives, selectedPartnerId]);
+
+    useEffect(() => { setCurrentPage(1); }, [selectedPartnerId, itemsPerPage]);
+
+    const totalPages = Math.ceil(filteredObjectives.length / itemsPerPage);
+    const paginatedObjectives = useMemo(() => {
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        return filteredObjectives.slice(startIndex, startIndex + itemsPerPage);
+    }, [filteredObjectives, currentPage, itemsPerPage]);
     
-    const formInvariants = invariants.filter(i => i.partenaire_id === (formData.partenaire_id || selectedPartnerId));
-    const selectedInvariant = formInvariants.find(i => i.id === formData.invariant_id);
+    // Logique pour filtrer les invariants déjà utilisés par ce partenaire
+    const currentPartnerId = formData.partenaire_id || selectedPartnerId;
+    
+    const usedInvariantIds = useMemo(() => {
+        return new Set(
+            objectives
+                .filter(obj => obj.partenaire_id === currentPartnerId && obj.id !== editingId)
+                .map(obj => obj.invariant_id)
+        );
+    }, [objectives, currentPartnerId, editingId]);
+
+    const formInvariants = useMemo(() => {
+        return invariants.filter(i => {
+            // L'invariant doit appartenir au partenaire ou être global
+            const matchesPartner = i.partenaire_id === 'all' || i.partenaire_id === currentPartnerId;
+            // L'invariant ne doit pas déjà avoir d'objectif (sauf si c'est celui qu'on édite)
+            const isNotUsed = !usedInvariantIds.has(i.id);
+            return matchesPartner && isNotUsed;
+        });
+    }, [invariants, currentPartnerId, usedInvariantIds]);
+
+    const selectedInvariant = invariants.find(i => i.id === formData.invariant_id);
 
     const isReadOnly = userRole === 'directeur';
 
-    const handleSave = () => {
+    const handleSave = async () => {
          if (!formData.invariant_id && !formData.chapitre) return; 
-         
-         setObjectives(prev => {
+         setIsSaving(true);
+
+         try {
              const newItem = { 
                  id: editingId || `obj_${Date.now()}`, 
                  ...formData,
                  partenaire_id: editingId ? formData.partenaire_id : (selectedPartnerId !== 'all' ? selectedPartnerId : '')
              } as Objectif;
-             return editingId ? prev.map(o => o.id === editingId ? newItem : o) : [...prev, newItem];
-         });
-         setIsModalOpen(false);
+
+             if (editingId) {
+                 await api.addObjectif(newItem); // Upsert
+                 setObjectives(prev => prev.map(o => o.id === editingId ? newItem : o));
+                 addNotification('success', 'Objectif mis à jour.');
+             } else {
+                 await api.addObjectif(newItem);
+                 setObjectives(prev => [...prev, newItem]);
+                 addNotification('success', 'Objectif ajouté.');
+             }
+             setIsModalOpen(false);
+         } catch (error) {
+             console.error("Erreur sauvegarde objectif:", error);
+             addNotification('error', "Erreur lors de la sauvegarde.");
+         } finally {
+             setIsSaving(false);
+         }
     };
 
     // --- Gestion Suppression ---
     const requestDelete = (id: string) => setDeleteAction({ type: 'single', id });
 
-    const confirmDelete = () => {
-        if (deleteAction) {
+    const confirmDelete = async () => {
+        if (!deleteAction) return;
+        setIsSaving(true);
+
+        try {
+            await api.deleteObjectif(deleteAction.id);
             setObjectives(prev => prev.filter(o => o.id !== deleteAction.id));
+            addNotification('success', 'Objectif supprimé.');
+        } catch (error) {
+            console.error("Erreur suppression:", error);
+            addNotification('error', "Erreur lors de la suppression.");
+        } finally {
+            setIsSaving(false);
             setDeleteAction(null);
         }
     };
 
     const handleOpenModal = (obj?: Objectif) => {
-        if(obj) { 
-            setEditingId(obj.id); 
-            setFormData(obj); 
-        }
-        else { 
-            setEditingId(null); 
-            setFormData({ 
-                chapitre: '', 
-                cible: 0, 
-                unite: '', 
-                mode: 'Préventif', 
-                frequence: 'Mensuel', 
-                partenaire_id: selectedPartnerId !== 'all' ? selectedPartnerId : '', 
-                invariant_id: '' 
-            }); 
-        }
+        if(obj) { setEditingId(obj.id); setFormData(obj); }
+        else { setEditingId(null); setFormData({ chapitre: '', cible: 0, unite: '', mode: 'Préventif', frequence: 'Mensuel', partenaire_id: selectedPartnerId !== 'all' ? selectedPartnerId : '', invariant_id: '' }); }
         setIsModalOpen(true);
     }
     
@@ -91,24 +150,38 @@ export const Objectives = ({ selectedPartnerId, partners, invariants, objectives
         <div className="space-y-6 animate-fade-in pb-8">
              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <h3 className="text-lg font-bold text-slate-800 dark:text-white">Gestion des Objectifs</h3>
-                <div className="flex gap-3">
-                    <ViewModeToggle mode={viewMode} setMode={setViewMode} />
-                    {!isReadOnly && (
-                        <button 
-                            onClick={() => handleOpenModal()} 
-                            disabled={selectedPartnerId === 'all'}
-                            title={selectedPartnerId === 'all' ? "Sélectionnez un partenaire pour ajouter" : ""}
-                            className={`bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2 ${selectedPartnerId === 'all' ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'}`}
-                        >
-                            <Plus size={18} /> Nouvel Objectif
-                        </button>
-                    )}
+                
+                <div className="flex flex-col sm:flex-row gap-3">
+                    <div className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2.5 text-slate-700 dark:text-slate-300 shadow-sm">
+                        <span className="text-sm text-slate-500 whitespace-nowrap hidden sm:inline">Lignes:</span>
+                        <select className="text-sm bg-transparent border-none focus:ring-0 cursor-pointer outline-none dark:bg-slate-800 dark:text-white font-medium" value={itemsPerPage} onChange={(e) => setItemsPerPage(Number(e.target.value))}>
+                            <option value={10}>10</option>
+                            <option value={20}>20</option>
+                            <option value={30}>30</option>
+                            <option value={50}>50</option>
+                            <option value={100}>100</option>
+                        </select>
+                    </div>
+
+                    <div className="flex gap-3">
+                        <ViewModeToggle mode={viewMode} setMode={setViewMode} />
+                        {!isReadOnly && (
+                            <button 
+                                onClick={() => handleOpenModal()} 
+                                disabled={selectedPartnerId === 'all'}
+                                title={selectedPartnerId === 'all' ? "Sélectionnez un partenaire pour ajouter" : ""}
+                                className={`bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2 ${selectedPartnerId === 'all' ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'} whitespace-nowrap`}
+                            >
+                                <Plus size={18} /> <span className="hidden sm:inline">Nouvel Objectif</span>
+                            </button>
+                        )}
+                    </div>
                 </div>
             </div>
             
             {viewMode === 'grid' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {filteredObjectives.map(obj => {
+                    {paginatedObjectives.map(obj => {
                         const invariantTitle = getInvariantTitle(obj.invariant_id);
                         
                         return (
@@ -120,7 +193,6 @@ export const Objectives = ({ selectedPartnerId, partners, invariants, objectives
                                 </div>
                             )}
                             
-                            {/* Header: L'invariant est le "parent" */}
                             <div className="p-5 border-b border-slate-100 dark:border-slate-700/50 bg-slate-50/50 dark:bg-slate-900/20">
                                 <div className="flex items-start gap-3">
                                     <div className="p-2 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-lg shrink-0 mt-0.5">
@@ -137,7 +209,6 @@ export const Objectives = ({ selectedPartnerId, partners, invariants, objectives
                                 </div>
                             </div>
 
-                            {/* Body: La cible (Target) */}
                             <div className="p-5 flex-1 flex flex-col justify-center">
                                 <div className="flex items-center gap-2 mb-2">
                                     <Target size={18} className="text-slate-400" />
@@ -149,7 +220,6 @@ export const Objectives = ({ selectedPartnerId, partners, invariants, objectives
                                 </div>
                             </div>
 
-                            {/* Footer: Métadonnées */}
                             <div className="bg-slate-50 dark:bg-slate-900/30 px-5 py-3 border-t border-slate-100 dark:border-slate-700/50 grid grid-cols-2 gap-4 text-xs">
                                 <div className="flex flex-col">
                                     <span className="text-slate-400 mb-0.5">Mode</span>
@@ -177,7 +247,7 @@ export const Objectives = ({ selectedPartnerId, partners, invariants, objectives
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                            {filteredObjectives.map(obj => {
+                            {paginatedObjectives.map(obj => {
                                 const invariantTitle = getInvariantTitle(obj.invariant_id);
                                 return (
                                     <tr key={obj.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
@@ -228,11 +298,32 @@ export const Objectives = ({ selectedPartnerId, partners, invariants, objectives
                     </table>
                 </div>
             )}
+
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mt-4 px-2">
+                <span className="text-sm text-slate-500 dark:text-slate-400">
+                    Affichage de <span className="font-semibold">{paginatedObjectives.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0}</span> à <span className="font-semibold">{Math.min(currentPage * itemsPerPage, filteredObjectives.length)}</span> sur <span className="font-semibold">{filteredObjectives.length}</span> résultats
+                </span>
+                <div className="flex items-center gap-2">
+                    <button 
+                        disabled={currentPage === 1} 
+                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                        className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    >
+                        <ChevronLeft size={18} />
+                    </button>
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-300 px-2">Page {currentPage} / {totalPages || 1}</span>
+                    <button 
+                        disabled={currentPage >= totalPages} 
+                        onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                        className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    >
+                        <ChevronRight size={18} />
+                    </button>
+                </div>
+            </div>
             
-            <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingId ? 'Modifier Objectif' : 'Nouvel Objectif'} footer={<><button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg">Annuler</button>{!isReadOnly && <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Enregistrer</button>}</>}>
+            <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingId ? 'Modifier Objectif' : 'Nouvel Objectif'} footer={<><button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors">Annuler</button>{!isReadOnly && <button onClick={handleSave} disabled={isSaving} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 disabled:opacity-70">{isSaving && <Loader2 size={16} className="animate-spin" />} Enregistrer</button>}</>}>
                  <div className="space-y-6">
-                     
-                     {/* Sélection de l'Invariant (Prioritaire) */}
                      <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-xl border border-blue-100 dark:border-blue-900/50 space-y-3">
                          <div className="flex items-center gap-2 mb-1">
                              <ShieldCheck size={18} className="text-blue-600 dark:text-blue-400" />
@@ -243,32 +334,48 @@ export const Objectives = ({ selectedPartnerId, partners, invariants, objectives
                             value={formData.invariant_id} 
                             onChange={(e:any) => setFormData({...formData, invariant_id: e.target.value})} 
                             options={[{value: '', label: 'Sélectionner un invariant...'}, ...formInvariants.map(i => ({value: i.id, label: i.titre}))]} 
-                            disabled={isReadOnly}
+                            disabled={isReadOnly || isSaving}
                         />
                         {selectedInvariant && (
                             <div className="text-xs text-blue-700 dark:text-blue-300 bg-white dark:bg-slate-800 p-3 rounded-lg border border-blue-100 dark:border-blue-900 italic">
                                 "{selectedInvariant.description}"
                             </div>
                         )}
+                        {!formData.invariant_id && formInvariants.length === 0 && (
+                            <div className="text-xs text-amber-600 bg-amber-50 p-2 rounded border border-amber-100 italic">
+                                Tous les invariants disponibles ont déjà un objectif assigné.
+                            </div>
+                        )}
                      </div>
 
-                     {/* Détails de l'objectif */}
                      <div className="space-y-4">
                         <div className="flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-700">
                              <Target size={18} className="text-slate-500" />
                              <h4 className="font-bold text-slate-600 dark:text-slate-300 text-sm uppercase">2. Définition de la cible</h4>
                         </div>
                         
-                        <FormInput label="Chapitre / Catégorie" value={formData.chapitre} onChange={(e:any) => setFormData({...formData, chapitre: e.target.value})} placeholder="Ex: Sécurité Routière" disabled={isReadOnly} />
+                        <FormInput label="Chapitre / Catégorie" value={formData.chapitre} onChange={(e:any) => setFormData({...formData, chapitre: e.target.value})} placeholder="Ex: Sécurité Routière" disabled={isReadOnly || isSaving} />
                         
                         <div className="grid grid-cols-2 gap-4">
-                            <FormInput label="Valeur Cible" type="number" value={formData.cible} onChange={(e:any) => setFormData({...formData, cible: parseFloat(e.target.value) || 0})} disabled={isReadOnly} />
-                            <FormInput label="Unité" value={formData.unite} onChange={(e:any) => setFormData({...formData, unite: e.target.value})} placeholder="Ex: % conformité" disabled={isReadOnly} />
+                            <FormInput label="Valeur Cible" type="number" value={formData.cible} onChange={(e:any) => setFormData({...formData, cible: parseFloat(e.target.value) || 0})} disabled={isReadOnly || isSaving} />
+                            <FormInput label="Unité" value={formData.unite} onChange={(e:any) => setFormData({...formData, unite: e.target.value})} placeholder="Ex: % conformité" disabled={isReadOnly || isSaving} />
                         </div>
                         
                         <div className="grid grid-cols-2 gap-4">
-                            <FormSelect label="Mode" value={formData.mode} onChange={(e:any) => setFormData({...formData, mode: e.target.value})} options={[{value: 'Préventif', label: 'Préventif'}, {value: 'Curatif', label: 'Curatif'}]} disabled={isReadOnly} />
-                            <FormSelect label="Fréquence" value={formData.frequence} onChange={(e:any) => setFormData({...formData, frequence: e.target.value})} options={[{value: 'Hebdomadaire', label: 'Hebdomadaire'}, {value: 'Mensuel', label: 'Mensuel'}, {value: 'Trimestriel', label: 'Trimestriel'}, {value: 'Annuel', label: 'Annuel'}]} disabled={isReadOnly} />
+                            <FormSelect label="Mode" value={formData.mode} onChange={(e:any) => setFormData({...formData, mode: e.target.value})} options={[{value: 'Préventif', label: 'Préventif'}, {value: 'Curatif', label: 'Curatif'}]} disabled={isReadOnly || isSaving} />
+                            <FormSelect 
+                                label="Fréquence" 
+                                value={formData.frequence} 
+                                onChange={(e:any) => setFormData({...formData, frequence: e.target.value})} 
+                                options={[
+                                    {value: 'Journalier', label: 'Journalier'}, 
+                                    {value: 'Hebdomadaire', label: 'Hebdomadaire'}, 
+                                    {value: 'Mensuel', label: 'Mensuel'}, 
+                                    {value: 'Trimestriel', label: 'Trimestriel'}, 
+                                    {value: 'Annuel', label: 'Annuel'}
+                                ]} 
+                                disabled={isReadOnly || isSaving} 
+                            />
                         </div>
                      </div>
                  </div>
@@ -283,8 +390,9 @@ export const Objectives = ({ selectedPartnerId, partners, invariants, objectives
                 footer={
                     <>
                         <button onClick={() => setDeleteAction(null)} className="flex-1 px-4 py-2.5 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl font-semibold">Annuler</button>
-                        <button onClick={confirmDelete} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2">
-                            <Trash2 size={18} /> Confirmer
+                        <button onClick={confirmDelete} disabled={isSaving} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2 disabled:opacity-70">
+                            {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />} 
+                            Confirmer
                         </button>
                     </>
                 }

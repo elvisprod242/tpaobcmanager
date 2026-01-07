@@ -14,7 +14,12 @@ export const isDriverLinkedToPartner = (driver: Conducteur, partnerId: string, o
 
 /**
  * Dérive la catégorie (Alerte/Alarme) et les points d'une infraction
- * en se basant sur le rapport lié et la configuration SCP de l'invariant.
+ * en se basant sur le type d'infraction déclaré et la configuration SCP de l'invariant.
+ * 
+ * Logique de priorité :
+ * 1. Config spécifique au Partenaire pour cet Invariant et ce Type.
+ * 2. Config Globale ('all') pour cet Invariant et ce Type.
+ * 3. Valeurs par défaut (Alarme = 3, Alerte = 1).
  */
 export const getInfractionSeverity = (
     infraction: Infraction, 
@@ -22,25 +27,44 @@ export const getInfractionSeverity = (
     invariants: Invariant[], 
     scpConfigs: ScpConfiguration[]
 ): { type: 'Alerte' | 'Alarme', points: number } => {
-    // 1. Trouver le rapport lié
-    const report = reports.find(r => r.id === infraction.rapports_id);
-    if (!report || !report.invariant_id) {
-        // Fallback par défaut si lien manquant
-        return { type: 'Alerte', points: 1 };
-    }
-
-    // 2. Trouver la configuration SCP pour cet invariant et ce partenaire
-    // Note: Il peut y avoir plusieurs configs (Alerte et Alarme) pour un même invariant.
-    // Sans info précise dans l'infraction, on prend la config la plus sévère ou la première trouvée par défaut.
-    // Idéalement, type_infraction devrait matcher ScpConfiguration.sanction ou autre, mais ici on simplifie.
-    const configs = scpConfigs.filter(c => c.invariants_id === report.invariant_id && c.partenaire_id === infraction.partenaire_id);
     
-    if (configs.length > 0) {
-        // Priorité à l'Alarme si multiple configs, pour ne pas sous-estimer le risque
-        const alarmConfig = configs.find(c => c.type === 'Alarme');
-        if (alarmConfig) return { type: 'Alarme', points: alarmConfig.value };
-        return { type: configs[0].type, points: configs[0].value };
+    // 1. Déterminer le type (Alerte ou Alarme) basé sur l'infraction enregistrée
+    // On normalise la casse pour éviter des erreurs de saisie
+    const infractionType = (infraction.type_infraction || 'Alerte') as 'Alerte' | 'Alarme';
+
+    // 2. Trouver l'Invariant lié via le Rapport
+    const report = reports.find(r => r.id === infraction.rapports_id);
+    const invariantId = report?.invariant_id;
+
+    // Valeurs par défaut si pas de config trouvée
+    const defaultPoints = infractionType === 'Alarme' ? 3 : 1;
+
+    if (!invariantId) {
+        return { type: infractionType, points: defaultPoints };
     }
 
-    return { type: 'Alerte', points: 1 };
+    // 3. Chercher une configuration spécifique pour le PARTENAIRE
+    const specificConfig = scpConfigs.find(c => 
+        c.invariants_id === invariantId && 
+        c.type === infractionType && 
+        c.partenaire_id === infraction.partenaire_id
+    );
+
+    if (specificConfig) {
+        return { type: infractionType, points: specificConfig.value };
+    }
+
+    // 4. Si pas de config spécifique, chercher une configuration GLOBALE ('all')
+    const globalConfig = scpConfigs.find(c => 
+        c.invariants_id === invariantId && 
+        c.type === infractionType && 
+        c.partenaire_id === 'all'
+    );
+
+    if (globalConfig) {
+        return { type: infractionType, points: globalConfig.value };
+    }
+
+    // 5. Fallback
+    return { type: infractionType, points: defaultPoints };
 };

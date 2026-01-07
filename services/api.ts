@@ -1,176 +1,319 @@
 
-import { Partenaire, Conducteur, Vehicule, Rapport, Infraction, CleObc, Invariant, Equipement, Procedure, ControleCabine, CommunicationPlan, CommunicationExecution, TempsTravail, TempsConduite, TempsRepos, ScpConfiguration, Objectif, User } from '../types';
-import { 
-    mockPartenairesList, mockConducteurs, mockVehicules, mockRapports, mockInfractions, mockCleObcList, mockInvariants, mockEquipements,
-    mockProcedures, mockControleCabine, mockCommunicationPlans, mockCommunicationExecutions, mockTempsTravail, mockTempsConduite, mockTempsRepos, mockScpConfigurations, mockObjectifs
-} from './mockData';
+import { Partenaire, Conducteur, Vehicule, Rapport, Infraction, CleObc, Invariant, Equipement, Procedure, ControleCabine, CommunicationPlan, CommunicationExecution, TempsTravail, TempsConduite, TempsRepos, ScpConfiguration, Objectif, User, Message, InfractionFile } from '../types';
+import { db } from './firebase'; 
+import { collection, getDocs, doc, setDoc, deleteDoc, query, orderBy, onSnapshot, where, writeBatch, getDoc, addDoc } from 'firebase/firestore';
 
-// Clés de stockage LocalStorage (Simulation de tables DB)
-const COLLECTIONS = {
-    PARTNERS: 'db_partenaires',
-    DRIVERS: 'db_conducteurs',
-    VEHICLES: 'db_vehicules',
-    REPORTS: 'db_rapports',
-    INFRACTIONS: 'db_infractions',
-    KEYS: 'db_cles_obc',
-    INVARIANTS: 'db_invariants',
-    EQUIPMENTS: 'db_equipements',
-    PROCEDURES: 'db_procedures',
-    CABIN_CONTROLS: 'db_controles_cabine',
-    COMM_PLANS: 'db_communication_plans',
-    COMM_EXECS: 'db_communication_executions',
-    WORK_ANALYSIS: 'db_analyse_temps_travail',
-    DRIVE_ANALYSIS: 'db_analyse_temps_conduite',
-    REST_ANALYSIS: 'db_analyse_temps_repos',
-    SCP_CONFIGS: 'db_scp_configurations',
-    OBJECTIVES: 'db_objectifs',
-    USERS: 'db_users'
+// --- UTILS ---
+
+const cleanPayload = <T>(data: T): T => {
+    const clean = JSON.parse(JSON.stringify(data));
+    return clean;
 };
 
-// --- Moteur de Base de Données Locale (LocalStorage Wrapper) ---
+const chunkArray = <T>(array: T[], size: number): T[][] => {
+    const chunked: T[][] = [];
+    for (let i = 0; i < array.length; i += size) {
+        chunked.push(array.slice(i, i + size));
+    }
+    return chunked;
+};
 
-const LocalDB = {
-    // Lecture
-    get: <T>(key: string, defaultData: T[] = []): T[] => {
+// Type pour le callback de notification
+type NotifyCallback<T> = (type: 'added' | 'modified' | 'removed', item: T) => void;
+
+// Helper générique pour les interactions Firestore optimisées
+const firestoreHelper = {
+    getAll: async <T>(collectionName: string): Promise<T[]> => {
         try {
-            const stored = localStorage.getItem(key);
-            if (stored) {
-                return JSON.parse(stored);
+            const querySnapshot = await getDocs(collection(db, collectionName));
+            return querySnapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }) as T);
+        } catch (error) {
+            console.error(`Erreur lecture Firestore [${collectionName}]:`, error);
+            return [];
+        }
+    },
+
+    // Optimisation Temps Réel & Cache avec Notification de changement
+    subscribe: <T>(
+        collectionName: string, 
+        callback: (data: T[]) => void, 
+        notify?: NotifyCallback<T>
+    ) => {
+        const q = query(collection(db, collectionName));
+        let isFirstRun = true;
+
+        return onSnapshot(q, (snapshot) => {
+            // 1. Mise à jour de l'état global (Liste complète)
+            const items = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }) as T);
+            callback(items);
+
+            // 2. Gestion des notifications granulaires (Diff)
+            if (!isFirstRun && notify) {
+                snapshot.docChanges().forEach((change) => {
+                    const item = { id: change.doc.id, ...change.doc.data() } as T;
+                    // On ne notifie que les changements pertinents provenant du serveur ou d'autres clients
+                    // (snapshot.metadata.hasPendingWrites est true si c'est notre propre écriture locale en attente)
+                    if (!snapshot.metadata.hasPendingWrites) {
+                        notify(change.type, item);
+                    }
+                });
             }
-            // Initialisation avec Mock Data si vide (Seeding)
-            localStorage.setItem(key, JSON.stringify(defaultData));
-            return defaultData;
-        } catch (e) {
-            console.error(`Erreur lecture DB locale [${key}]`, e);
-            return defaultData;
-        }
+            
+            isFirstRun = false;
+        }, (error) => {
+            console.error(`Erreur subscription [${collectionName}]:`, error);
+        });
     },
 
-    // Écriture complète (pour les saves en masse ou updates)
-    set: <T>(key: string, data: T[]): void => {
+    save: async <T extends { id: string }>(collectionName: string, item: T): Promise<void> => {
         try {
-            localStorage.setItem(key, JSON.stringify(data));
-        } catch (e) {
-            console.error(`Erreur écriture DB locale [${key}]`, e);
+            const payload = cleanPayload(item);
+            await setDoc(doc(db, collectionName, item.id), payload, { merge: true });
+        } catch (error) {
+            console.error(`Erreur écriture Firestore [${collectionName}]:`, error);
+            throw error;
         }
     },
 
-    // Ajout unitaire
-    add: <T>(key: string, item: T): void => {
-        const items = LocalDB.get<T>(key);
-        items.push(item);
-        LocalDB.set(key, items);
-    },
-
-    // Mise à jour unitaire (par ID)
-    update: <T extends { id: string }>(key: string, item: T): void => {
-        const items = LocalDB.get<T>(key);
-        const index = items.findIndex(i => i.id === item.id);
-        if (index !== -1) {
-            items[index] = item;
-            LocalDB.set(key, items);
+    saveAll: async <T extends { id: string }>(collectionName: string, items: T[]): Promise<void> => {
+        try {
+            const chunks = chunkArray(items, 450);
+            for (const chunk of chunks) {
+                const batch = writeBatch(db);
+                chunk.forEach(item => {
+                    const ref = doc(db, collectionName, item.id);
+                    batch.set(ref, cleanPayload(item), { merge: true });
+                });
+                await batch.commit();
+            }
+        } catch (error) {
+            console.error(`Erreur batch Firestore [${collectionName}]:`, error);
+            throw error;
         }
     },
 
-    // Suppression unitaire (par ID)
-    delete: <T extends { id: string }>(key: string, id: string): void => {
-        const items = LocalDB.get<T>(key);
-        const newItems = items.filter(i => i.id !== id);
-        LocalDB.set(key, newItems);
+    delete: async (collectionName: string, id: string): Promise<void> => {
+        try {
+            await deleteDoc(doc(db, collectionName, id));
+        } catch (error) {
+            console.error(`Erreur suppression Firestore [${collectionName}]:`, error);
+            throw error;
+        }
+    },
+
+    // Suppression en masse optimisée (Batch)
+    deleteBatch: async (collectionName: string, ids: string[]): Promise<void> => {
+        try {
+            // Firestore limite les batchs à 500 opérations
+            const chunks = chunkArray(ids, 500);
+            for (const chunk of chunks) {
+                const batch = writeBatch(db);
+                chunk.forEach(id => {
+                    const ref = doc(db, collectionName, id);
+                    batch.delete(ref);
+                });
+                await batch.commit();
+            }
+        } catch (error) {
+            console.error(`Erreur suppression batch Firestore [${collectionName}]:`, error);
+            throw error;
+        }
+    },
+
+    // --- GESTION SOUS-COLLECTIONS ---
+    getSubCollection: async <T>(parentCollection: string, parentId: string, subCollectionName: string): Promise<T[]> => {
+        try {
+            const q = query(collection(db, parentCollection, parentId, subCollectionName));
+            const snapshot = await getDocs(q);
+            return snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }) as T);
+        } catch (error) {
+            console.error(`Erreur lecture sous-collection:`, error);
+            return [];
+        }
+    },
+
+    saveSubCollectionDoc: async <T extends { id: string }>(parentCollection: string, parentId: string, subCollectionName: string, item: T): Promise<void> => {
+        try {
+            const payload = cleanPayload(item);
+            await setDoc(doc(db, parentCollection, parentId, subCollectionName, item.id), payload, { merge: true });
+        } catch (error) {
+            console.error(`Erreur écriture sous-collection:`, error);
+            throw error;
+        }
+    },
+
+    deleteSubCollectionDoc: async (parentCollection: string, parentId: string, subCollectionName: string, docId: string): Promise<void> => {
+        try {
+            await deleteDoc(doc(db, parentCollection, parentId, subCollectionName, docId));
+        } catch (error) {
+            console.error(`Erreur suppression sous-collection:`, error);
+            throw error;
+        }
     }
 };
-
-// --- API Service (Interface unifiée) ---
 
 export const api = {
     // --- GESTION UTILISATEURS ---
     getUserProfile: async (uid: string): Promise<User | null> => {
-        const users = LocalDB.get<User>(COLLECTIONS.USERS);
-        return users.find(u => u.id === uid) || null;
-    },
-
-    createUserProfile: async (user: User) => {
-        // Vérifie si existe déjà pour éviter doublons lors de l'inscription simulée
-        const users = LocalDB.get<User>(COLLECTIONS.USERS);
-        if (!users.find(u => u.id === user.id)) {
-            LocalDB.add(COLLECTIONS.USERS, user);
+        try {
+            const docRef = doc(db, "users", uid);
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+                return { id: docSnap.id, ...docSnap.data() } as User;
+            }
+            return null;
+        } catch (error) {
+            console.error("Erreur getUserProfile:", error);
+            return null;
         }
     },
+    getAllUsers: () => firestoreHelper.getAll<User>('users'),
+    createUserProfile: (user: User) => firestoreHelper.save('users', user),
+    updateUserProfile: (user: Partial<User>) => user.id ? firestoreHelper.save('users', user as User) : Promise.resolve(),
 
-    updateUserProfile: async (user: Partial<User>) => {
-        if (!user.id) return;
-        const users = LocalDB.get<User>(COLLECTIONS.USERS);
-        const index = users.findIndex(u => u.id === user.id);
-        if (index !== -1) {
-            users[index] = { ...users[index], ...user };
-            LocalDB.set(COLLECTIONS.USERS, users);
-        }
+    // --- Messagerie ---
+    getMessages: () => firestoreHelper.getAll<Message>('messages'),
+    subscribeToMessages: (callback: (messages: Message[]) => void, notify?: NotifyCallback<Message>) => {
+        const q = query(collection(db, "messages"), orderBy("timestamp", "asc"));
+        let isFirstRun = true;
+        return onSnapshot(q, (snapshot) => {
+            const msgs = snapshot.docs.map(d => ({ ...d.data(), id: d.id }) as Message);
+            callback(msgs);
+            
+            if (!isFirstRun && notify) {
+                snapshot.docChanges().forEach(change => {
+                    // Pour les messages, on ne notifie que les AJOUTS
+                    if(change.type === 'added' && !snapshot.metadata.hasPendingWrites) {
+                        notify('added', { id: change.doc.id, ...change.doc.data() } as Message);
+                    }
+                });
+            }
+            isFirstRun = false;
+        });
+    },
+    sendMessage: (msg: Message) => firestoreHelper.save('messages', msg),
+    markMessagesAsRead: async (senderId: string, receiverId: string) => {
+        const q = query(collection(db, "messages"), where("senderId", "==", senderId), where("receiverId", "==", receiverId), where("read", "==", false));
+        const snapshot = await getDocs(q);
+        if (snapshot.empty) return;
+        const batch = writeBatch(db);
+        snapshot.docs.forEach(d => batch.update(d.ref, { read: true }));
+        await batch.commit();
     },
 
-    // --- Partenaires ---
-    getPartenaires: async () => LocalDB.get<Partenaire>(COLLECTIONS.PARTNERS, mockPartenairesList),
-    savePartenaires: async (data: Partenaire[]) => LocalDB.set(COLLECTIONS.PARTNERS, data),
-    addPartenaire: async (p: Partenaire) => LocalDB.add(COLLECTIONS.PARTNERS, p),
-    updatePartenaire: async (p: Partenaire) => LocalDB.update(COLLECTIONS.PARTNERS, p),
-    deletePartenaire: async (id: string) => LocalDB.delete(COLLECTIONS.PARTNERS, id),
+    // --- Entités Métier (Avec Abonnements et Notifs) ---
+    
+    // Partenaires
+    getPartenaires: () => firestoreHelper.getAll<Partenaire>('partenaires'),
+    subscribeToPartners: (cb: (d: Partenaire[]) => void, notify?: NotifyCallback<Partenaire>) => firestoreHelper.subscribe('partenaires', cb, notify),
+    addPartenaire: (p: Partenaire) => firestoreHelper.save('partenaires', p),
+    updatePartenaire: (p: Partenaire) => firestoreHelper.save('partenaires', p),
+    deletePartenaire: (id: string) => firestoreHelper.delete('partenaires', id),
 
-    // --- Conducteurs ---
-    getConducteurs: async () => LocalDB.get<Conducteur>(COLLECTIONS.DRIVERS, mockConducteurs),
-    saveConducteurs: async (data: Conducteur[]) => LocalDB.set(COLLECTIONS.DRIVERS, data),
+    // Conducteurs
+    getConducteurs: () => firestoreHelper.getAll<Conducteur>('conducteurs'),
+    subscribeToDrivers: (cb: (d: Conducteur[]) => void, notify?: NotifyCallback<Conducteur>) => firestoreHelper.subscribe('conducteurs', cb, notify),
+    addConducteur: (c: Conducteur) => firestoreHelper.save('conducteurs', c),
+    updateConducteur: (c: Conducteur) => firestoreHelper.save('conducteurs', c),
+    deleteConducteur: (id: string) => firestoreHelper.delete('conducteurs', id),
 
-    // --- Véhicules ---
-    getVehicules: async () => LocalDB.get<Vehicule>(COLLECTIONS.VEHICLES, mockVehicules),
-    saveVehicules: async (data: Vehicule[]) => LocalDB.set(COLLECTIONS.VEHICLES, data),
+    // Véhicules
+    getVehicules: () => firestoreHelper.getAll<Vehicule>('vehicules'),
+    subscribeToVehicles: (cb: (d: Vehicule[]) => void, notify?: NotifyCallback<Vehicule>) => firestoreHelper.subscribe('vehicules', cb, notify),
+    addVehicule: (v: Vehicule) => firestoreHelper.save('vehicules', v),
+    updateVehicule: (v: Vehicule) => firestoreHelper.save('vehicules', v),
+    deleteVehicule: (id: string) => firestoreHelper.delete('vehicules', id),
 
-    // --- Rapports ---
-    getRapports: async () => LocalDB.get<Rapport>(COLLECTIONS.REPORTS, mockRapports),
-    saveRapports: async (data: Rapport[]) => LocalDB.set(COLLECTIONS.REPORTS, data),
+    // Rapports
+    getRapports: () => firestoreHelper.getAll<Rapport>('rapports'),
+    subscribeToReports: (cb: (d: Rapport[]) => void, notify?: NotifyCallback<Rapport>) => firestoreHelper.subscribe('rapports', cb, notify),
+    saveRapports: (data: Rapport[]) => firestoreHelper.saveAll('rapports', data),
+    addRapport: (r: Rapport) => firestoreHelper.save('rapports', r),
+    deleteRapport: (id: string) => firestoreHelper.delete('rapports', id),
 
-    // --- Infractions ---
-    getInfractions: async () => LocalDB.get<Infraction>(COLLECTIONS.INFRACTIONS, mockInfractions),
-    saveInfractions: async (data: Infraction[]) => LocalDB.set(COLLECTIONS.INFRACTIONS, data),
+    // Infractions
+    getInfractions: () => firestoreHelper.getAll<Infraction>('infractions'),
+    subscribeToInfractions: (cb: (d: Infraction[]) => void, notify?: NotifyCallback<Infraction>) => firestoreHelper.subscribe('infractions', cb, notify),
+    addInfraction: (i: Infraction) => firestoreHelper.save('infractions', i),
+    deleteInfraction: (id: string) => firestoreHelper.delete('infractions', id),
+    deleteInfractionsBulk: (ids: string[]) => firestoreHelper.deleteBatch('infractions', ids),
 
-    // --- Clés OBC ---
-    getCleObc: async () => LocalDB.get<CleObc>(COLLECTIONS.KEYS, mockCleObcList),
-    saveCleObc: async (data: CleObc[]) => LocalDB.set(COLLECTIONS.KEYS, data),
+    // Fichiers Infractions
+    getInfractionFiles: (infractionId: string) => firestoreHelper.getSubCollection<InfractionFile>('infractions', infractionId, 'files'),
+    addInfractionFile: (infractionId: string, file: InfractionFile) => firestoreHelper.saveSubCollectionDoc('infractions', infractionId, 'files', file),
+    deleteInfractionFile: (infractionId: string, fileId: string) => firestoreHelper.deleteSubCollectionDoc('infractions', infractionId, 'files', fileId),
 
-    // --- Invariants ---
-    getInvariants: async () => LocalDB.get<Invariant>(COLLECTIONS.INVARIANTS, mockInvariants),
-    saveInvariants: async (data: Invariant[]) => LocalDB.set(COLLECTIONS.INVARIANTS, data),
+    // Clés OBC
+    getCleObc: () => firestoreHelper.getAll<CleObc>('cle_obc'),
+    subscribeToObcKeys: (cb: (d: CleObc[]) => void) => firestoreHelper.subscribe('cle_obc', cb),
+    addCleObc: (k: CleObc) => firestoreHelper.save('cle_obc', k),
+    deleteCleObc: (id: string) => firestoreHelper.delete('cle_obc', id),
 
-    // --- Equipements ---
-    getEquipements: async () => LocalDB.get<Equipement>(COLLECTIONS.EQUIPMENTS, mockEquipements),
-    saveEquipements: async (data: Equipement[]) => LocalDB.set(COLLECTIONS.EQUIPMENTS, data),
+    // Invariants
+    getInvariants: () => firestoreHelper.getAll<Invariant>('invariants'),
+    subscribeToInvariants: (cb: (d: Invariant[]) => void) => firestoreHelper.subscribe('invariants', cb),
+    addInvariant: (i: Invariant) => firestoreHelper.save('invariants', i),
+    deleteInvariant: (id: string) => firestoreHelper.delete('invariants', id),
 
-    // --- Procedures ---
-    getProcedures: async () => LocalDB.get<Procedure>(COLLECTIONS.PROCEDURES, mockProcedures),
-    saveProcedures: async (data: Procedure[]) => LocalDB.set(COLLECTIONS.PROCEDURES, data),
+    // Equipements
+    getEquipements: () => firestoreHelper.getAll<Equipement>('equipements'),
+    subscribeToEquipements: (cb: (d: Equipement[]) => void) => firestoreHelper.subscribe('equipements', cb),
+    addEquipement: (e: Equipement) => firestoreHelper.save('equipements', e),
+    deleteEquipement: (id: string) => firestoreHelper.delete('equipements', id),
 
-    // --- Contrôle Cabine ---
-    getControleCabine: async () => LocalDB.get<ControleCabine>(COLLECTIONS.CABIN_CONTROLS, mockControleCabine),
-    saveControleCabine: async (data: ControleCabine[]) => LocalDB.set(COLLECTIONS.CABIN_CONTROLS, data),
+    // Procédures
+    getProcedures: () => firestoreHelper.getAll<Procedure>('procedures'),
+    subscribeToProcedures: (cb: (d: Procedure[]) => void, notify?: NotifyCallback<Procedure>) => firestoreHelper.subscribe('procedures', cb, notify),
+    addProcedure: (p: Procedure) => firestoreHelper.save('procedures', p),
+    deleteProcedure: (id: string) => firestoreHelper.delete('procedures', id),
 
-    // --- Communication ---
-    getCommunicationPlans: async () => LocalDB.get<CommunicationPlan>(COLLECTIONS.COMM_PLANS, mockCommunicationPlans),
-    saveCommunicationPlans: async (data: CommunicationPlan[]) => LocalDB.set(COLLECTIONS.COMM_PLANS, data),
+    // Contrôle Cabine
+    getControleCabine: () => firestoreHelper.getAll<ControleCabine>('controles_cabine'),
+    subscribeToControleCabine: (cb: (d: ControleCabine[]) => void, notify?: NotifyCallback<ControleCabine>) => firestoreHelper.subscribe('controles_cabine', cb, notify),
+    addControleCabine: (c: ControleCabine) => firestoreHelper.save('controles_cabine', c),
+    deleteControleCabine: (id: string) => firestoreHelper.delete('controles_cabine', id),
 
-    getCommunicationExecutions: async () => LocalDB.get<CommunicationExecution>(COLLECTIONS.COMM_EXECS, mockCommunicationExecutions),
-    saveCommunicationExecutions: async (data: CommunicationExecution[]) => LocalDB.set(COLLECTIONS.COMM_EXECS, data),
+    // Communication
+    getCommunicationPlans: () => firestoreHelper.getAll<CommunicationPlan>('communication_plans'),
+    subscribeToCommunicationPlans: (cb: (d: CommunicationPlan[]) => void, notify?: NotifyCallback<CommunicationPlan>) => firestoreHelper.subscribe('communication_plans', cb, notify),
+    addCommunicationPlan: (p: CommunicationPlan) => firestoreHelper.save('communication_plans', p),
+    deleteCommunicationPlan: (id: string) => firestoreHelper.delete('communication_plans', id),
 
-    // --- Analyses Temps ---
-    getTempsTravail: async () => LocalDB.get<TempsTravail>(COLLECTIONS.WORK_ANALYSIS, mockTempsTravail),
-    saveTempsTravail: async (data: TempsTravail[]) => LocalDB.set(COLLECTIONS.WORK_ANALYSIS, data),
+    getCommunicationExecutions: () => firestoreHelper.getAll<CommunicationExecution>('communication_executions'),
+    subscribeToCommunicationExecutions: (cb: (d: CommunicationExecution[]) => void) => firestoreHelper.subscribe('communication_executions', cb),
+    addCommunicationExecution: (e: CommunicationExecution) => firestoreHelper.save('communication_executions', e),
 
-    getTempsConduite: async () => LocalDB.get<TempsConduite>(COLLECTIONS.DRIVE_ANALYSIS, mockTempsConduite),
-    saveTempsConduite: async (data: TempsConduite[]) => LocalDB.set(COLLECTIONS.DRIVE_ANALYSIS, data),
+    // Analyses Temps
+    getTempsTravail: () => firestoreHelper.getAll<TempsTravail>('temps_travail'),
+    subscribeToTempsTravail: (cb: (d: TempsTravail[]) => void) => firestoreHelper.subscribe('temps_travail', cb),
+    addTempsTravail: (t: TempsTravail) => firestoreHelper.save('temps_travail', t),
+    getTempsTravailFiles: (id: string) => firestoreHelper.getSubCollection<InfractionFile>('temps_travail', id, 'files'),
+    addTempsTravailFile: (id: string, file: InfractionFile) => firestoreHelper.saveSubCollectionDoc('temps_travail', id, 'files', file),
+    deleteTempsTravailFile: (id: string, fileId: string) => firestoreHelper.deleteSubCollectionDoc('temps_travail', id, 'files', fileId),
 
-    getTempsRepos: async () => LocalDB.get<TempsRepos>(COLLECTIONS.REST_ANALYSIS, mockTempsRepos),
-    saveTempsRepos: async (data: TempsRepos[]) => LocalDB.set(COLLECTIONS.REST_ANALYSIS, data),
+    getTempsConduite: () => firestoreHelper.getAll<TempsConduite>('temps_conduite'),
+    subscribeToTempsConduite: (cb: (d: TempsConduite[]) => void) => firestoreHelper.subscribe('temps_conduite', cb),
+    addTempsConduite: (t: TempsConduite) => firestoreHelper.save('temps_conduite', t),
+    getTempsConduiteFiles: (id: string) => firestoreHelper.getSubCollection<InfractionFile>('temps_conduite', id, 'files'),
+    addTempsConduiteFile: (id: string, file: InfractionFile) => firestoreHelper.saveSubCollectionDoc('temps_conduite', id, 'files', file),
+    deleteTempsConduiteFile: (id: string, fileId: string) => firestoreHelper.deleteSubCollectionDoc('temps_conduite', id, 'files', fileId),
 
-    // --- Configs & Objectifs ---
-    getScpConfigurations: async () => LocalDB.get<ScpConfiguration>(COLLECTIONS.SCP_CONFIGS, mockScpConfigurations),
-    saveScpConfigurations: async (data: ScpConfiguration[]) => LocalDB.set(COLLECTIONS.SCP_CONFIGS, data),
+    getTempsRepos: () => firestoreHelper.getAll<TempsRepos>('temps_repos'),
+    subscribeToTempsRepos: (cb: (d: TempsRepos[]) => void) => firestoreHelper.subscribe('temps_repos', cb),
+    addTempsRepos: (t: TempsRepos) => firestoreHelper.save('temps_repos', t),
+    getTempsReposFiles: (id: string) => firestoreHelper.getSubCollection<InfractionFile>('temps_repos', id, 'files'),
+    addTempsReposFile: (id: string, file: InfractionFile) => firestoreHelper.saveSubCollectionDoc('temps_repos', id, 'files', file),
+    deleteTempsReposFile: (id: string, fileId: string) => firestoreHelper.deleteSubCollectionDoc('temps_repos', id, 'files', fileId),
 
-    getObjectifs: async () => LocalDB.get<Objectif>(COLLECTIONS.OBJECTIVES, mockObjectifs),
-    saveObjectifs: async (data: Objectif[]) => LocalDB.set(COLLECTIONS.OBJECTIVES, data),
+    // SCP & Objectifs
+    getScpConfigurations: () => firestoreHelper.getAll<ScpConfiguration>('scp_configurations'),
+    subscribeToScpConfigurations: (cb: (d: ScpConfiguration[]) => void) => firestoreHelper.subscribe('scp_configurations', cb),
+    saveScpConfigurations: (data: ScpConfiguration[]) => firestoreHelper.saveAll('scp_configurations', data),
+    addScpConfiguration: (c: ScpConfiguration) => firestoreHelper.save('scp_configurations', c),
+    deleteScpConfiguration: (id: string) => firestoreHelper.delete('scp_configurations', id),
+
+    getObjectifs: () => firestoreHelper.getAll<Objectif>('objectifs'),
+    subscribeToObjectifs: (cb: (d: Objectif[]) => void) => firestoreHelper.subscribe('objectifs', cb),
+    addObjectif: (o: Objectif) => firestoreHelper.save('objectifs', o),
+    deleteObjectif: (id: string) => firestoreHelper.delete('objectifs', id),
 };

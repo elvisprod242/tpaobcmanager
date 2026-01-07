@@ -14,12 +14,15 @@ interface NotificationContextType {
     addNotification: (type: NotificationType, message: string, duration?: number) => void;
     removeNotification: (id: string) => void;
     notifications: Notification[];
+    unreadSystemCount: number;
+    clearSystemNotifications: () => void;
 }
 
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
 
 export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     const [notifications, setNotifications] = useState<Notification[]>([]);
+    const [unreadSystemCount, setUnreadSystemCount] = useState(0);
 
     const removeNotification = useCallback((id: string) => {
         setNotifications((prev) => prev.filter((n) => n.id !== id));
@@ -30,6 +33,9 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
         const newNotification = { id, type, message, duration };
         
         setNotifications((prev) => [...prev, newNotification]);
+        
+        // Incrémente le compteur pour la cloche du header
+        setUnreadSystemCount(prev => prev + 1);
 
         if (duration > 0) {
             setTimeout(() => {
@@ -38,8 +44,12 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
         }
     }, [removeNotification]);
 
+    const clearSystemNotifications = useCallback(() => {
+        setUnreadSystemCount(0);
+    }, []);
+
     return (
-        <NotificationContext.Provider value={{ addNotification, removeNotification, notifications }}>
+        <NotificationContext.Provider value={{ addNotification, removeNotification, notifications, unreadSystemCount, clearSystemNotifications }}>
             {children}
         </NotificationContext.Provider>
     );

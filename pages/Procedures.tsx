@@ -6,6 +6,8 @@ import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
 import { Modal } from '../components/ui/Modal';
 import { FormInput } from '../components/ui/FormElements';
 import { storageService } from '../services/storage';
+import { api } from '../services/api';
+import { useNotification } from '../contexts/NotificationContext';
 
 interface ProceduresProps {
     selectedPartnerId: string;
@@ -15,6 +17,7 @@ interface ProceduresProps {
 }
 
 export const Procedures = ({ selectedPartnerId, procedures, setProcedures, userRole }: ProceduresProps) => {
+    const { addNotification } = useNotification();
     const [viewMode, setViewMode] = useState<ViewMode>('grid');
     const [filter, setFilter] = useState('');
     const [selectedProcedures, setSelectedProcedures] = useState<Set<string>>(new Set());
@@ -23,6 +26,7 @@ export const Procedures = ({ selectedPartnerId, procedures, setProcedures, userR
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [formData, setFormData] = useState<Partial<Procedure>>({ nom: '', file: '', partenaire_id: '', date: new Date().toISOString().split('T')[0] });
     const [isUploading, setIsUploading] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
     
     // Modal Suppression
     const [deleteAction, setDeleteAction] = useState<{ type: 'single' | 'bulk', id?: string } | null>(null);
@@ -67,21 +71,35 @@ export const Procedures = ({ selectedPartnerId, procedures, setProcedures, userR
         setDeleteAction({ type: 'bulk' });
     };
 
-    const executeDelete = () => {
+    const executeDelete = async () => {
         if (!deleteAction) return;
+        setIsSaving(true);
 
-        if (deleteAction.type === 'bulk') {
-            setProcedures(procedures.filter(p => !selectedProcedures.has(p.id)));
-            setSelectedProcedures(new Set());
-        } else if (deleteAction.type === 'single' && deleteAction.id) {
-            setProcedures(procedures.filter(p => p.id !== deleteAction.id));
-            if (selectedProcedures.has(deleteAction.id)) {
-                const newSelected = new Set(selectedProcedures);
-                newSelected.delete(deleteAction.id);
-                setSelectedProcedures(newSelected);
+        try {
+            if (deleteAction.type === 'bulk') {
+                const idsToDelete = Array.from(selectedProcedures) as string[];
+                await Promise.all(idsToDelete.map(id => api.deleteProcedure(id)));
+                
+                setProcedures(procedures.filter(p => !selectedProcedures.has(p.id)));
+                setSelectedProcedures(new Set());
+                addNotification('success', `${idsToDelete.length} procédures supprimées.`);
+            } else if (deleteAction.type === 'single' && deleteAction.id) {
+                await api.deleteProcedure(deleteAction.id);
+                setProcedures(procedures.filter(p => p.id !== deleteAction.id));
+                if (selectedProcedures.has(deleteAction.id)) {
+                    const newSelected = new Set(selectedProcedures);
+                    newSelected.delete(deleteAction.id);
+                    setSelectedProcedures(newSelected);
+                }
+                addNotification('success', 'Procédure supprimée.');
             }
+        } catch (error) {
+            console.error("Erreur suppression:", error);
+            addNotification('error', "Erreur lors de la suppression.");
+        } finally {
+            setIsSaving(false);
+            setDeleteAction(null);
         }
-        setDeleteAction(null);
     };
 
     // --- Logique d'Ajout ---
@@ -99,7 +117,7 @@ export const Procedures = ({ selectedPartnerId, procedures, setProcedures, userR
             
             setIsUploading(true);
             try {
-                // Upload vers Firebase Storage
+                // Upload vers Firebase Storage (Simulé ou réel selon impl)
                 const url = await storageService.uploadFile(file, 'procedures');
                 
                 setFormData(prev => ({ 
@@ -117,17 +135,27 @@ export const Procedures = ({ selectedPartnerId, procedures, setProcedures, userR
         }
     };
 
-    const handleSave = () => {
+    const handleSave = async () => {
         if (!formData.nom || !formData.file) return;
-        setProcedures([
-            ...procedures, 
-            { 
+        setIsSaving(true);
+
+        try {
+            const newItem = { 
                 id: `proc_${Date.now()}`, 
                 ...formData, 
                 type: formData.type || 'pdf'
-            } as Procedure
-        ]);
-        setIsModalOpen(false);
+            } as Procedure;
+
+            await api.addProcedure(newItem);
+            setProcedures([...procedures, newItem]);
+            addNotification('success', 'Procédure ajoutée.');
+            setIsModalOpen(false);
+        } catch (error) {
+            console.error("Erreur sauvegarde procédure:", error);
+            addNotification('error', "Erreur lors de la sauvegarde.");
+        } finally {
+            setIsSaving(false);
+        }
     };
 
     // --- Logique de Vue ---
@@ -154,68 +182,33 @@ export const Procedures = ({ selectedPartnerId, procedures, setProcedures, userR
 
     // --- Rendu VUE LECTEUR (Si un document est ouvert) ---
     if (viewingItem) {
+        // ... (Rendu lecteur identique) ...
         return (
             <div className="flex flex-col h-[calc(100vh-8rem)] animate-fade-in">
-                {/* Header Lecteur */}
                 <div className="flex items-center justify-between mb-4 bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm shrink-0">
                     <div className="flex items-center gap-4 overflow-hidden">
                         <button 
                             onClick={() => setViewingItem(null)}
                             className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors flex items-center gap-2 font-medium"
                         >
-                            <ArrowLeft size={20} />
-                            Retour
+                            <ArrowLeft size={20} /> Retour
                         </button>
                         <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-2 hidden sm:block"></div>
-                        <h2 className="text-lg font-bold text-slate-800 dark:text-white truncate" title={viewingItem.name}>
-                            {viewingItem.name}
-                        </h2>
+                        <h2 className="text-lg font-bold text-slate-800 dark:text-white truncate" title={viewingItem.name}>{viewingItem.name}</h2>
                     </div>
                     <div className="flex gap-2 shrink-0">
-                        <a 
-                            href={viewingItem.url} 
-                            target="_blank"
-                            rel="noreferrer"
-                            className="hidden sm:flex items-center gap-2 px-4 py-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors text-sm font-medium"
-                        >
-                            <ExternalLink size={16} /> Ouvrir nouvel onglet
-                        </a>
-                        <a 
-                            href={viewingItem.url} 
-                            download 
-                            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm"
-                        >
-                            <Download size={16} /> Télécharger
-                        </a>
+                        <a href={viewingItem.url} target="_blank" rel="noreferrer" className="hidden sm:flex items-center gap-2 px-4 py-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors text-sm font-medium"><ExternalLink size={16} /> Ouvrir nouvel onglet</a>
+                        <a href={viewingItem.url} download className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm"><Download size={16} /> Télécharger</a>
                     </div>
                 </div>
-
-                {/* Zone de lecture principale */}
                 <div className="flex-1 bg-slate-100 dark:bg-slate-900 rounded-xl overflow-hidden relative border border-slate-200 dark:border-slate-700 shadow-inner">
                     {viewingItem.type === 'pdf' ? (
-                        <iframe 
-                            src={viewingItem.url} 
-                            className="w-full h-full"
-                            title="PDF Viewer"
-                        >
-                            <div className="flex flex-col items-center justify-center h-full">
-                                <p className="mb-4 text-slate-500">Votre navigateur ne supporte pas l'affichage direct des PDF.</p>
-                                <a href={viewingItem.url} download className="px-4 py-2 bg-blue-600 text-white rounded-lg">Télécharger le PDF</a>
-                            </div>
+                        <iframe src={viewingItem.url} className="w-full h-full" title="PDF Viewer">
+                            <div className="flex flex-col items-center justify-center h-full"><p className="mb-4 text-slate-500">Votre navigateur ne supporte pas l'affichage direct des PDF.</p><a href={viewingItem.url} download className="px-4 py-2 bg-blue-600 text-white rounded-lg">Télécharger le PDF</a></div>
                         </iframe>
                     ) : viewingItem.type === 'image' ? (
-                        <div className="w-full h-full flex items-center justify-center p-4 overflow-auto">
-                            <img 
-                                src={viewingItem.url} 
-                                alt={viewingItem.name} 
-                                className="max-w-full max-h-full object-contain rounded shadow-lg" 
-                            />
-                        </div>
-                    ) : (
-                        <div className="flex flex-col items-center justify-center h-full text-slate-500">
-                            <p>Format non supporté pour la prévisualisation.</p>
-                        </div>
-                    )}
+                        <div className="w-full h-full flex items-center justify-center p-4 overflow-auto"><img src={viewingItem.url} alt={viewingItem.name} className="max-w-full max-h-full object-contain rounded shadow-lg" /></div>
+                    ) : (<div className="flex flex-col items-center justify-center h-full text-slate-500"><p>Format non supporté pour la prévisualisation.</p></div>)}
                 </div>
             </div>
         );
@@ -349,21 +342,22 @@ export const Procedures = ({ selectedPartnerId, procedures, setProcedures, userR
                     {!isReadOnly && (
                         <button 
                             onClick={handleSave} 
-                            disabled={isUploading}
-                            className={`px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 ${isUploading ? 'opacity-70 cursor-wait' : ''}`}
+                            disabled={isUploading || isSaving}
+                            className={`px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 disabled:opacity-70 disabled:cursor-wait`}
                         >
-                            {isUploading && <Loader2 size={16} className="animate-spin" />}
-                            {isUploading ? 'Upload en cours...' : 'Enregistrer'}
+                            {(isUploading || isSaving) && <Loader2 size={16} className="animate-spin" />}
+                            {isUploading ? 'Upload...' : (isSaving ? 'Enregistrement...' : 'Enregistrer')}
                         </button>
                     )}
                  </>
              }>
                  <div className="space-y-4">
-                     <FormInput label="Nom de la procédure" value={formData.nom} onChange={(e: any) => setFormData({...formData, nom: e.target.value})} placeholder="Ex: Consignes de sécurité..." disabled={isReadOnly} />
+                     <FormInput label="Nom de la procédure" value={formData.nom} onChange={(e: any) => setFormData({...formData, nom: e.target.value})} placeholder="Ex: Consignes de sécurité..." disabled={isReadOnly || isUploading} />
+                     {/* ... (File Input Identique) ... */}
                      <div>
                          <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Fichier</label>
                          <div className="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl p-6 text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer relative">
-                             <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleFileUpload} accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.png" disabled={isReadOnly} />
+                             <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleFileUpload} accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.png" disabled={isReadOnly || isUploading} />
                              {isUploading ? (
                                 <div className="text-blue-600 flex flex-col items-center">
                                     <Loader2 size={32} className="animate-spin mb-2" />
@@ -400,9 +394,11 @@ export const Procedures = ({ selectedPartnerId, procedures, setProcedures, userR
                         </button>
                         <button 
                             onClick={executeDelete} 
-                            className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 transition-all flex items-center justify-center gap-2"
+                            disabled={isSaving}
+                            className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 transition-all flex items-center justify-center gap-2 disabled:opacity-70"
                         >
-                            <Trash2 size={18} /> Confirmer
+                            {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />} 
+                            Confirmer
                         </button>
                     </>
                 }

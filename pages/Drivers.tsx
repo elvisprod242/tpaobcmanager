@@ -1,6 +1,5 @@
-
-import React, { useState, useMemo } from 'react';
-import { Plus, Edit2, Trash2, User, Search, MapPin, CreditCard, Key, CheckSquare, Square, Briefcase, Link2Off, AlertCircle, AlertTriangle, Printer, FileText } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Plus, Edit2, Trash2, User, Search, MapPin, CreditCard, Key, CheckSquare, Square, Briefcase, Link2Off, AlertCircle, AlertTriangle, Printer, FileText, ChevronLeft, ChevronRight, Eye, Loader2 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Conducteur, CleObc, Partenaire, UserRole } from '../types';
@@ -8,6 +7,8 @@ import { Modal } from '../components/ui/Modal';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
 import { FormInput, FormSelect } from '../components/ui/FormElements';
 import { useNotification } from '../contexts/NotificationContext';
+import { useNavigate } from 'react-router-dom';
+import { api } from '../services/api';
 
 interface DriversProps {
     selectedPartnerId: string;
@@ -19,15 +20,37 @@ interface DriversProps {
 }
 
 export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partners, userRole }: DriversProps) => {
+    const navigate = useNavigate();
     const { addNotification } = useNotification();
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [formData, setFormData] = useState<Partial<Conducteur>>({ nom: '', prenom: '', numero_permis: '', categorie_permis: 'C', lieu_travail: '' });
+    const [isSaving, setIsSaving] = useState(false);
     
     // État Suppression
     const [deleteAction, setDeleteAction] = useState<{ type: 'single' | 'bulk', id?: string } | null>(null);
 
-    const [viewMode, setViewMode] = useState<ViewMode>('grid');
+    // Initialisation : Liste pour Tablette/PC (>= 768px), Grille pour Mobile
+    const [viewMode, setViewMode] = useState<ViewMode>(() => window.innerWidth >= 768 ? 'list' : 'grid');
+
+    // Pagination
+    const [currentPage, setCurrentPage] = useState(1);
+    const [itemsPerPage, setItemsPerPage] = useState(10);
+
+    // Écouteur de redimensionnement pour adapter la vue dynamiquement
+    useEffect(() => {
+        const handleResize = () => {
+            if (window.innerWidth >= 768) {
+                setViewMode('list');
+            } else {
+                setViewMode('grid');
+            }
+        };
+        
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
+
     const [filter, setFilter] = useState('');
     const [selectedDrivers, setSelectedDrivers] = useState<Set<string>>(new Set());
 
@@ -56,11 +79,22 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
         });
     }, [drivers, filter]);
 
+    // Reset page quand le filtre change
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [filter, selectedPartnerId, itemsPerPage]);
+
+    const totalPages = Math.ceil(filteredDrivers.length / itemsPerPage);
+    const paginatedDrivers = useMemo(() => {
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        return filteredDrivers.slice(startIndex, startIndex + itemsPerPage);
+    }, [filteredDrivers, currentPage, itemsPerPage]);
+
     const handleSelectAll = () => {
-        if (selectedDrivers.size === filteredDrivers.length && filteredDrivers.length > 0) {
+        if (selectedDrivers.size === paginatedDrivers.length && paginatedDrivers.length > 0) {
             setSelectedDrivers(new Set());
         } else {
-            setSelectedDrivers(new Set(filteredDrivers.map(d => d.id)));
+            setSelectedDrivers(new Set(paginatedDrivers.map(d => d.id)));
         }
     };
 
@@ -71,26 +105,40 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
         setSelectedDrivers(newSelected);
     };
 
-    // --- Actions CRUD ---
-    const handleSave = () => {
+    // --- Actions CRUD (Optimisées avec API) ---
+    const handleSave = async () => {
         if (!formData.nom || !formData.prenom) return;
-        setDrivers(prev => {
-             const existingDriver = editingId ? prev.find(d => d.id === editingId) : null;
-             const cleObcIds = existingDriver ? existingDriver.cle_obc_ids : [];
+        setIsSaving(true);
 
-             const newItem = { 
-                 id: editingId || `c_${Date.now()}`, 
-                 ...formData,
-                 cle_obc_ids: cleObcIds 
-             } as Conducteur;
-             
-             return editingId ? prev.map(d => d.id === editingId ? newItem : d) : [...prev, newItem];
-        });
-        addNotification('success', editingId ? 'Conducteur mis à jour.' : 'Conducteur ajouté.');
-        setIsModalOpen(false);
+        try {
+            const existingDriver = editingId ? drivers.find(d => d.id === editingId) : null;
+            const cleObcIds = existingDriver ? existingDriver.cle_obc_ids : [];
+
+            const newItem = { 
+                id: editingId || `c_${Date.now()}`, 
+                ...formData,
+                cle_obc_ids: cleObcIds 
+            } as Conducteur;
+
+            if (editingId) {
+                await api.updateConducteur(newItem);
+                setDrivers(prev => prev.map(d => d.id === editingId ? newItem : d));
+                addNotification('success', 'Conducteur mis à jour.');
+            } else {
+                await api.addConducteur(newItem);
+                setDrivers(prev => [...prev, newItem]);
+                addNotification('success', 'Conducteur ajouté.');
+            }
+            setIsModalOpen(false);
+        } catch (error) {
+            console.error("Erreur sauvegarde conducteur:", error);
+            addNotification('error', "Erreur lors de la sauvegarde.");
+        } finally {
+            setIsSaving(false);
+        }
     };
 
-    // --- Suppression Unifiée ---
+    // --- Suppression Unifiée (Optimisée) ---
     const requestDelete = (id: string, e?: React.MouseEvent) => {
         if(e) e.stopPropagation();
         setDeleteAction({ type: 'single', id });
@@ -98,29 +146,47 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
 
     const requestBulkDelete = () => setDeleteAction({ type: 'bulk' });
 
-    const confirmDelete = () => {
+    const confirmDelete = async () => {
         if (!deleteAction) return;
+        setIsSaving(true);
 
-        if (deleteAction.type === 'single' && deleteAction.id) {
-            setDrivers(prev => prev.filter(d => d.id !== deleteAction.id));
-            if (selectedDrivers.has(deleteAction.id)) {
-                const newSelected = new Set(selectedDrivers);
-                newSelected.delete(deleteAction.id);
-                setSelectedDrivers(newSelected);
+        try {
+            if (deleteAction.type === 'single' && deleteAction.id) {
+                await api.deleteConducteur(deleteAction.id);
+                setDrivers(prev => prev.filter(d => d.id !== deleteAction.id));
+                
+                if (selectedDrivers.has(deleteAction.id)) {
+                    const newSelected = new Set(selectedDrivers);
+                    newSelected.delete(deleteAction.id);
+                    setSelectedDrivers(newSelected);
+                }
+                addNotification('success', 'Conducteur supprimé.');
+            } else if (deleteAction.type === 'bulk') {
+                const idsToDelete = Array.from(selectedDrivers) as string[];
+                // Suppression parallèle pour performance
+                await Promise.all(idsToDelete.map(id => api.deleteConducteur(id)));
+                
+                setDrivers(prev => prev.filter(d => !selectedDrivers.has(d.id)));
+                addNotification('success', `${selectedDrivers.size} conducteurs supprimés.`);
+                setSelectedDrivers(new Set());
             }
-            addNotification('success', 'Conducteur supprimé.');
-        } else if (deleteAction.type === 'bulk') {
-            setDrivers(prev => prev.filter(d => !selectedDrivers.has(d.id)));
-            addNotification('success', `${selectedDrivers.size} conducteurs supprimés.`);
-            setSelectedDrivers(new Set());
+        } catch (error) {
+            console.error("Erreur suppression:", error);
+            addNotification('error', "Erreur lors de la suppression.");
+        } finally {
+            setIsSaving(false);
+            setDeleteAction(null);
         }
-        setDeleteAction(null);
     };
 
     const handleOpenModal = (d?: Conducteur) => {
         if(d) { setEditingId(d.id); setFormData(d); }
         else { setEditingId(null); setFormData({ nom: '', prenom: '', numero_permis: '', categorie_permis: 'C', lieu_travail: '' }); }
         setIsModalOpen(true);
+    };
+
+    const handleViewDetails = (id: string) => {
+        navigate(`/drivers/${id}`);
     };
 
     const getKeyDisplayInfo = (driverKeys?: string[]) => {
@@ -137,15 +203,11 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
         return partnerKey ? { text: partnerKey.cle_obc, isValid: true, isError: false } : { text: "Aucune clé pour ce partenaire", isValid: false, isError: true };
     };
 
-    // --- Gestion Impression & Export PDF ---
-    const handlePrint = () => {
-        window.print();
-    };
+    // --- Gestion Impression & Export PDF (inchangée) ---
+    const handlePrint = () => { window.print(); };
 
     const handleExportPDF = () => {
         const doc = new jsPDF();
-        
-        // Titre et Méta-données
         doc.setFontSize(20);
         doc.setTextColor(30, 41, 59);
         doc.text("Liste des Conducteurs", 14, 20);
@@ -159,19 +221,11 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
         doc.text(`Date: ${dateStr}`, 14, 33);
         doc.text(`Total: ${filteredDrivers.length} conducteur(s)`, 14, 38);
 
-        // Préparation des données pour le tableau
         const tableColumn = ["Conducteur", "Permis", "Cat.", "Clé OBC", "Lieu Travail", "Partenaire Lié"];
         const tableRows = filteredDrivers.map(d => {
             const keyInfo = getKeyDisplayInfo(d.cle_obc_ids);
             const pName = getPartnerName(d.cle_obc_ids);
-            return [
-                `${d.nom} ${d.prenom}`,
-                d.numero_permis,
-                d.categorie_permis,
-                keyInfo.text,
-                d.lieu_travail || '-',
-                pName
-            ];
+            return [`${d.nom} ${d.prenom}`, d.numero_permis, d.categorie_permis, keyInfo.text, d.lieu_travail || '-', pName];
         });
 
         autoTable(doc, {
@@ -181,13 +235,7 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
             theme: 'grid',
             headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold' },
             styles: { fontSize: 9, cellPadding: 3, textColor: 50 },
-            alternateRowStyles: { fillColor: [248, 250, 252] },
-            didDrawPage: (data: any) => {
-                const pageCount = doc.getNumberOfPages();
-                doc.setFontSize(8);
-                doc.setTextColor(150);
-                doc.text(`Page ${pageCount}`, data.settings.margin.left, doc.internal.pageSize.height - 10);
-            }
+            alternateRowStyles: { fillColor: [248, 250, 252] }
         });
 
         doc.save(`Conducteurs_${new Date().toISOString().split('T')[0]}.pdf`);
@@ -197,8 +245,8 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
     return (
         <div className="space-y-6 animate-fade-in w-full pb-8">
             {/* Barre d'outils (Masquée à l'impression) */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 no-print">
-                 <div className="relative w-full sm:w-auto flex-1 max-w-md group">
+            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 no-print">
+                 <div className="relative w-full xl:w-auto flex-1 max-w-md group">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={18} />
                     <input 
                         type="text" 
@@ -208,30 +256,29 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                         onChange={(e) => setFilter(e.target.value)}
                     />
                 </div>
-                <div className="flex gap-3">
-                    <button 
-                        onClick={handlePrint}
-                        className="p-2.5 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700 rounded-xl border border-transparent hover:border-slate-200 dark:hover:border-slate-600 transition-colors"
-                        title="Imprimer (Navigateur)"
-                    >
-                        <Printer size={20} />
-                    </button>
-                    <button 
-                        onClick={handleExportPDF}
-                        className="flex items-center gap-2 px-3 py-2.5 text-blue-700 bg-blue-50 hover:bg-blue-100 dark:bg-blue-900/20 dark:text-blue-300 dark:hover:bg-blue-900/40 rounded-xl font-medium transition-colors"
-                        title="Télécharger PDF"
-                    >
-                        <FileText size={18} /> <span className="hidden md:inline">PDF</span>
-                    </button>
-                    <ViewModeToggle mode={viewMode} setMode={setViewMode} />
-                    {!isReadOnly && (
-                        <button 
-                            onClick={() => handleOpenModal()} 
-                            className="bg-blue-600 text-white px-5 py-2.5 rounded-xl font-semibold transition-all flex items-center gap-2 shadow-md shadow-blue-900/20 active:scale-95 hover:bg-blue-700"
-                        >
-                            <Plus size={18} strokeWidth={2.5} /> <span className="hidden sm:inline">Ajouter</span>
-                        </button>
-                    )}
+                
+                <div className="flex flex-col sm:flex-row gap-3">
+                    <div className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2.5 text-slate-700 dark:text-slate-300 shadow-sm">
+                        <span className="text-sm text-slate-500 whitespace-nowrap hidden sm:inline">Lignes:</span>
+                        <select className="text-sm bg-transparent border-none focus:ring-0 cursor-pointer outline-none dark:bg-slate-800 dark:text-white font-medium" value={itemsPerPage} onChange={(e) => setItemsPerPage(Number(e.target.value))}>
+                            <option value={10}>10</option>
+                            <option value={20}>20</option>
+                            <option value={30}>30</option>
+                            <option value={50}>50</option>
+                            <option value={100}>100</option>
+                        </select>
+                    </div>
+
+                    <div className="flex gap-3">
+                        <button onClick={handlePrint} className="p-2.5 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700 rounded-xl border border-transparent hover:border-slate-200 dark:hover:border-slate-600 transition-colors"><Printer size={20} /></button>
+                        <button onClick={handleExportPDF} className="flex items-center gap-2 px-3 py-2.5 text-blue-700 bg-blue-50 hover:bg-blue-100 dark:bg-blue-900/20 dark:text-blue-300 dark:hover:bg-blue-900/40 rounded-xl font-medium transition-colors"><FileText size={18} /> <span className="hidden md:inline">PDF</span></button>
+                        <ViewModeToggle mode={viewMode} setMode={setViewMode} />
+                        {!isReadOnly && (
+                            <button onClick={() => handleOpenModal()} className="bg-blue-600 text-white px-5 py-2.5 rounded-xl font-semibold transition-all flex items-center gap-2 shadow-md shadow-blue-900/20 active:scale-95 hover:bg-blue-700 whitespace-nowrap">
+                                <Plus size={18} strokeWidth={2.5} /> <span className="hidden sm:inline">Ajouter</span>
+                            </button>
+                        )}
+                    </div>
                 </div>
             </div>
 
@@ -244,7 +291,7 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                 </div>
             )}
 
-            {/* HEADER IMPRESSION (Visible uniquement à l'impression browser) */}
+            {/* HEADER IMPRESSION */}
             <div className="hidden print:block mb-6">
                 <h1 className="text-2xl font-bold text-black mb-2">Liste des Conducteurs</h1>
                 <div className="text-sm text-gray-600 flex justify-between border-b border-gray-300 pb-2 mb-4">
@@ -254,7 +301,7 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                 </div>
             </div>
 
-            {/* VUE TABLEAU POUR IMPRESSION (Toujours visible à l'impression, remplace Grid/List) */}
+            {/* VUE TABLEAU POUR IMPRESSION */}
             <div className="hidden print:block w-full">
                 <table className="w-full text-left text-sm border-collapse">
                     <thead>
@@ -284,11 +331,11 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                 </table>
             </div>
 
-            {/* VUES INTERACTIVES (Masquées à l'impression) */}
+            {/* VUES INTERACTIVES */}
             <div className="print:hidden">
                 {viewMode === 'grid' ? (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                        {filteredDrivers.map(d => {
+                        {paginatedDrivers.map(d => {
                             const isSelected = selectedDrivers.has(d.id);
                             const partnerName = getPartnerName(d.cle_obc_ids);
                             const keyInfo = getKeyDisplayInfo(d.cle_obc_ids);
@@ -296,8 +343,8 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                             return (
                                 <div 
                                     key={d.id} 
-                                    className={`bg-white dark:bg-slate-800 rounded-2xl border transition-all relative group flex flex-col overflow-hidden ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700 shadow-md' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-600 hover:shadow-lg'}`}
-                                    onClick={() => handleOpenModal(d)}
+                                    className={`bg-white dark:bg-slate-800 rounded-2xl border transition-all relative group flex flex-col overflow-hidden cursor-pointer ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700 shadow-md' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-600 hover:shadow-lg'}`}
+                                    onClick={() => handleViewDetails(d.id)}
                                 >
                                     {!isReadOnly && (
                                         <div className="absolute top-3 left-3 z-20" onClick={(e) => e.stopPropagation()}>
@@ -306,11 +353,14 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                                             </button>
                                         </div>
                                     )}
-                                    {!isReadOnly && (
-                                        <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 z-20 bg-white/80 dark:bg-slate-800/80 p-1 rounded-lg backdrop-blur-sm">
-                                            <button onClick={(e) => requestDelete(d.id, e)} className="p-1.5 text-slate-400 hover:text-red-600 bg-white dark:bg-slate-700 rounded-lg shadow-sm transition-colors"><Trash2 size={16} /></button>
-                                        </div>
-                                    )}
+                                    <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 z-20 bg-white/80 dark:bg-slate-800/80 p-1 rounded-lg backdrop-blur-sm" onClick={(e) => e.stopPropagation()}>
+                                        {!isReadOnly && (
+                                            <>
+                                                <button onClick={() => handleOpenModal(d)} className="p-1.5 text-slate-400 hover:text-blue-600 bg-white dark:bg-slate-700 rounded-lg shadow-sm transition-colors"><Edit2 size={16} /></button>
+                                                <button onClick={(e) => requestDelete(d.id, e)} className="p-1.5 text-slate-400 hover:text-red-600 bg-white dark:bg-slate-700 rounded-lg shadow-sm transition-colors"><Trash2 size={16} /></button>
+                                            </>
+                                        )}
+                                    </div>
 
                                     {/* Header Carte */}
                                     <div className="p-6 flex flex-col items-center border-b border-slate-100 dark:border-slate-700/50 bg-gradient-to-b from-slate-50 to-white dark:from-slate-800 dark:to-slate-800">
@@ -368,7 +418,7 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                                 <tr>
                                     <th className="px-6 py-4 w-12 sticky-header">
                                          <button onClick={handleSelectAll} className="text-slate-400 hover:text-blue-600 transition-colors">
-                                            {selectedDrivers.size > 0 && selectedDrivers.size === filteredDrivers.length ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}
+                                            {selectedDrivers.size > 0 && selectedDrivers.size === paginatedDrivers.length ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}
                                         </button>
                                     </th>
                                     <th className="px-6 py-4 sticky-header">Conducteur</th>
@@ -380,7 +430,7 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
-                                {filteredDrivers.map(d => {
+                                {paginatedDrivers.map(d => {
                                     const isSelected = selectedDrivers.has(d.id);
                                     const keyInfo = getKeyDisplayInfo(d.cle_obc_ids);
                                     const partnerName = getPartnerName(d.cle_obc_ids);
@@ -388,7 +438,7 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                                     return (
                                         <tr 
                                             key={d.id} 
-                                            onClick={() => handleOpenModal(d)}
+                                            onClick={() => handleViewDetails(d.id)}
                                             className={`hover:bg-slate-50/80 dark:hover:bg-slate-700/30 transition-colors cursor-pointer ${isSelected ? 'bg-blue-50/30 dark:bg-blue-900/10' : ''}`}
                                         >
                                             <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
@@ -432,9 +482,12 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                                             </td>
                                             <td className="px-6 py-4 text-right">
                                                 <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                                                    <button onClick={() => handleOpenModal(d)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors bg-slate-50 dark:bg-slate-700/50 rounded-lg"><Edit2 size={16} /></button>
+                                                    <button onClick={() => handleViewDetails(d.id)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors bg-slate-50 dark:bg-slate-700/50 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20" title="Voir le profil"><Eye size={16} /></button>
                                                     {!isReadOnly && (
-                                                        <button onClick={(e) => requestDelete(d.id, e)} className="p-2 text-slate-400 hover:text-red-600 transition-colors bg-slate-50 dark:bg-slate-700/50 rounded-lg"><Trash2 size={16} /></button>
+                                                        <>
+                                                            <button onClick={() => handleOpenModal(d)} className="p-2 text-slate-400 hover:text-blue-600 transition-colors bg-slate-50 dark:bg-slate-700/50 rounded-lg"><Edit2 size={16} /></button>
+                                                            <button onClick={(e) => requestDelete(d.id, e)} className="p-2 text-slate-400 hover:text-red-600 transition-colors bg-slate-50 dark:bg-slate-700/50 rounded-lg"><Trash2 size={16} /></button>
+                                                        </>
                                                     )}
                                                 </div>
                                             </td>
@@ -445,28 +498,59 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                         </table>
                     </div>
                 )}
+
+                {/* Footer Pagination */}
+                <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mt-4 px-2">
+                    <span className="text-sm text-slate-500 dark:text-slate-400">
+                        Affichage de <span className="font-semibold">{paginatedDrivers.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0}</span> à <span className="font-semibold">{Math.min(currentPage * itemsPerPage, filteredDrivers.length)}</span> sur <span className="font-semibold">{filteredDrivers.length}</span> résultats
+                    </span>
+                    <div className="flex items-center gap-2">
+                        <button 
+                            disabled={currentPage === 1} 
+                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                            className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                        >
+                            <ChevronLeft size={18} />
+                        </button>
+                        <span className="text-sm font-medium text-slate-700 dark:text-slate-300 px-2">Page {currentPage} / {totalPages || 1}</span>
+                        <button 
+                            disabled={currentPage >= totalPages} 
+                            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                            className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                        >
+                            <ChevronRight size={18} />
+                        </button>
+                    </div>
+                </div>
             </div>
 
              <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingId ? 'Modifier Conducteur' : 'Nouveau Conducteur'} footer={
                  <>
                     <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors">Annuler</button>
                     {!isReadOnly && (
-                        <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Enregistrer</button>
+                        <button 
+                            onClick={handleSave} 
+                            disabled={isSaving}
+                            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 disabled:opacity-70 disabled:cursor-wait"
+                        >
+                            {isSaving && <Loader2 size={16} className="animate-spin" />}
+                            {isSaving ? 'Enregistrement...' : 'Enregistrer'}
+                        </button>
                     )}
                  </>
              }>
                  <div className="space-y-4">
                      <div className="grid grid-cols-2 gap-4">
-                         <FormInput label="Nom" value={formData.nom} onChange={(e:any) => setFormData({...formData, nom: e.target.value})} disabled={isReadOnly} />
-                         <FormInput label="Prénom" value={formData.prenom} onChange={(e:any) => setFormData({...formData, prenom: e.target.value})} disabled={isReadOnly} />
+                         <FormInput label="Nom" value={formData.nom} onChange={(e:any) => setFormData({...formData, nom: e.target.value})} disabled={isReadOnly || isSaving} />
+                         <FormInput label="Prénom" value={formData.prenom} onChange={(e:any) => setFormData({...formData, prenom: e.target.value})} disabled={isReadOnly || isSaving} />
                      </div>
                      
                      <div className="grid grid-cols-2 gap-4">
-                        <FormInput label="N° Permis" value={formData.numero_permis} onChange={(e:any) => setFormData({...formData, numero_permis: e.target.value})} disabled={isReadOnly} />
-                        <FormInput label="Catégorie" value={formData.categorie_permis} onChange={(e:any) => setFormData({...formData, categorie_permis: e.target.value})} disabled={isReadOnly} />
+                        <FormInput label="N° Permis" value={formData.numero_permis} onChange={(e:any) => setFormData({...formData, numero_permis: e.target.value})} disabled={isReadOnly || isSaving} />
+                        <FormInput label="Catégorie" value={formData.categorie_permis} onChange={(e:any) => setFormData({...formData, categorie_permis: e.target.value})} disabled={isReadOnly || isSaving} />
                      </div>
 
-                     <FormInput label="Lieu de travail" value={formData.lieu_travail} onChange={(e:any) => setFormData({...formData, lieu_travail: e.target.value})} disabled={isReadOnly} />
+                     <FormInput label="Lieu de travail" value={formData.lieu_travail} onChange={(e:any) => setFormData({...formData, lieu_travail: e.target.value})} disabled={isReadOnly || isSaving} />
                      
                      <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded-xl text-sm flex items-start gap-3">
                         <Key className="shrink-0 mt-0.5" size={18} />
@@ -487,8 +571,13 @@ export const Drivers = ({ selectedPartnerId, drivers, setDrivers, obcKeys, partn
                 footer={
                     <>
                         <button onClick={() => setDeleteAction(null)} className="flex-1 px-4 py-2.5 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl font-semibold">Annuler</button>
-                        <button onClick={confirmDelete} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2">
-                            <Trash2 size={18} /> Confirmer
+                        <button 
+                            onClick={confirmDelete} 
+                            disabled={isSaving}
+                            className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-wait"
+                        >
+                            {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />} 
+                            Confirmer
                         </button>
                     </>
                 }

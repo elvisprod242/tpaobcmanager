@@ -20,7 +20,8 @@ export const Modal = ({ isOpen, onClose, title, children, footer, size = 'defaul
         return () => setMounted(false);
     }, []);
 
-    if (!isOpen || !mounted) return null;
+    // Ensure we are mounted and document.body exists to prevent "Minified React error #306"
+    if (!isOpen || !mounted || typeof document === 'undefined' || !document.body) return null;
 
     const sizeClasses = {
         default: 'max-w-2xl',

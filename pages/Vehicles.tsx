@@ -1,10 +1,12 @@
 
-import React, { useState } from 'react';
-import { Truck, Plus, Edit2, Trash2, MapPin, Video, EyeOff, Cpu, Check, AlertTriangle } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Truck, Plus, Edit2, Trash2, MapPin, Video, EyeOff, Cpu, Check, AlertTriangle, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Vehicule, Equipement, Partenaire, UserRole } from '../types';
 import { Modal } from '../components/ui/Modal';
 import { FormInput } from '../components/ui/FormElements';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
+import { api } from '../services/api';
+import { useNotification } from '../contexts/NotificationContext';
 
 interface VehiclesProps {
     selectedPartnerId: string;
@@ -17,11 +19,32 @@ interface VehiclesProps {
 }
 
 export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehiclesData, equipementsData, setEquipementsData, userRole }: VehiclesProps) => {
-    
+    const { addNotification } = useNotification();
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<'general' | 'equipement'>('general');
-    const [viewMode, setViewMode] = useState<ViewMode>('grid');
+    const [isSaving, setIsSaving] = useState(false);
+    
+    // Initialisation : Liste pour Tablette/PC (>= 768px), Grille pour Mobile
+    const [viewMode, setViewMode] = useState<ViewMode>(() => window.innerWidth >= 768 ? 'list' : 'grid');
+
+    // Pagination
+    const [currentPage, setCurrentPage] = useState(1);
+    const [itemsPerPage, setItemsPerPage] = useState(10);
+
+    // Écouteur de redimensionnement pour adapter la vue dynamiquement
+    useEffect(() => {
+        const handleResize = () => {
+            if (window.innerWidth >= 768) {
+                setViewMode('list');
+            } else {
+                setViewMode('grid');
+            }
+        };
+        
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
 
     // État Suppression
     const [deleteAction, setDeleteAction] = useState<{ type: 'single', id?: string } | null>(null);
@@ -37,27 +60,47 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
 
     const isReadOnly = userRole === 'directeur';
 
-    const filteredVehicles = vehiclesData.filter(v => selectedPartnerId === 'all' || v.partenaire_id === selectedPartnerId);
+    const filteredVehicles = useMemo(() => {
+        return vehiclesData.filter(v => selectedPartnerId === 'all' || v.partenaire_id === selectedPartnerId);
+    }, [vehiclesData, selectedPartnerId]);
 
-    const handleSave = () => {
+    // Reset page quand le filtre change
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [selectedPartnerId, itemsPerPage]);
+
+    const totalPages = Math.ceil(filteredVehicles.length / itemsPerPage);
+    const paginatedVehicles = useMemo(() => {
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        return filteredVehicles.slice(startIndex, startIndex + itemsPerPage);
+    }, [filteredVehicles, currentPage, itemsPerPage]);
+
+    const handleSave = async () => {
          if (!formData.nom) return;
+         setIsSaving(true);
          
          const vehiculeId = editingId || `v_${Date.now()}`;
          const partnerId = editingId ? formData.partenaire_id : (selectedPartnerId !== 'all' ? selectedPartnerId : '');
 
-         setVehiclesData(prev => {
-             const newItem: Vehicule = { 
+         try {
+             // 1. Sauvegarde Véhicule
+             const newVehicule: Vehicule = { 
                  id: vehiculeId, 
                  nom: formData.nom!,
                  immatriculation: formData.immatriculation!,
                  partenaire_id: partnerId!
              };
-             return editingId ? prev.map(v => v.id === editingId ? newItem : v) : [...prev, newItem];
-         });
-
-         setEquipementsData(prev => {
-             const existingEq = prev.find(e => e.vehicule_id === vehiculeId);
              
+             if (editingId) {
+                 await api.updateVehicule(newVehicule);
+                 setVehiclesData(prev => prev.map(v => v.id === editingId ? newVehicule : v));
+             } else {
+                 await api.addVehicule(newVehicule);
+                 setVehiclesData(prev => [...prev, newVehicule]);
+             }
+
+             // 2. Sauvegarde Equipements liés
+             const existingEq = equipementsData.find(e => e.vehicule_id === vehiculeId);
              const newEq: Equipement = {
                  id: existingEq ? existingEq.id : `eq_${Date.now()}`,
                  vehicule_id: vehiculeId,
@@ -71,25 +114,52 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
                  detecteur_fatigue_detail: formData.detecteur_fatigue ? (formData.detecteur_fatigue_detail || '') : ''
              };
 
-             if (existingEq) {
-                 return prev.map(e => e.id === existingEq.id ? newEq : e);
-             } else {
-                 return [...prev, newEq];
-             }
-         });
+             await api.addEquipement(newEq); // Utilise add/update générique (merge)
+             
+             setEquipementsData(prev => {
+                 if (existingEq) {
+                     return prev.map(e => e.id === existingEq.id ? newEq : e);
+                 } else {
+                     return [...prev, newEq];
+                 }
+             });
 
-         setIsModalOpen(false);
+             addNotification('success', 'Véhicule et équipements enregistrés.');
+             setIsModalOpen(false);
+         } catch (error) {
+             console.error("Erreur sauvegarde véhicule:", error);
+             addNotification('error', "Erreur lors de la sauvegarde.");
+         } finally {
+             setIsSaving(false);
+         }
     };
     
     // --- Suppression ---
     const requestDelete = (id: string) => setDeleteAction({ type: 'single', id });
 
-    const confirmDelete = () => {
+    const confirmDelete = async () => {
         if (!deleteAction || !deleteAction.id) return;
+        setIsSaving(true);
         
-        setVehiclesData(prev => prev.filter(v => v.id !== deleteAction.id));
-        setEquipementsData(prev => prev.filter(e => e.vehicule_id !== deleteAction.id));
-        setDeleteAction(null);
+        try {
+            await api.deleteVehicule(deleteAction.id);
+            setVehiclesData(prev => prev.filter(v => v.id !== deleteAction.id));
+            
+            // Suppression équipement lié si existe
+            const eq = equipementsData.find(e => e.vehicule_id === deleteAction.id);
+            if (eq) {
+                await api.deleteEquipement(eq.id);
+                setEquipementsData(prev => prev.filter(e => e.id !== eq.id));
+            }
+            
+            addNotification('success', 'Véhicule supprimé.');
+        } catch (error) {
+            console.error("Erreur suppression:", error);
+            addNotification('error', "Erreur lors de la suppression.");
+        } finally {
+            setIsSaving(false);
+            setDeleteAction(null);
+        }
     };
 
     const handleOpenModal = (v?: Vehicule) => {
@@ -125,24 +195,37 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
         <div className="space-y-6 animate-fade-in pb-8">
              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <h3 className="text-lg font-bold text-slate-800 dark:text-white">Gestion des Véhicules & Équipements</h3>
-                <div className="flex gap-3">
-                    <ViewModeToggle mode={viewMode} setMode={setViewMode} />
-                    {!isReadOnly && (
-                        <button 
-                            onClick={() => handleOpenModal()} 
-                            disabled={selectedPartnerId === 'all'}
-                            title={selectedPartnerId === 'all' ? "Sélectionnez un partenaire pour ajouter" : ""}
-                            className={`bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2 ${selectedPartnerId === 'all' ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'}`}
-                        >
-                            <Plus size={18} /> Nouveau Véhicule
-                        </button>
-                    )}
+                <div className="flex flex-col sm:flex-row gap-3">
+                    <div className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2.5 text-slate-700 dark:text-slate-300 shadow-sm">
+                        <span className="text-sm text-slate-500 whitespace-nowrap hidden sm:inline">Lignes:</span>
+                        <select className="text-sm bg-transparent border-none focus:ring-0 cursor-pointer outline-none dark:bg-slate-800 dark:text-white font-medium" value={itemsPerPage} onChange={(e) => setItemsPerPage(Number(e.target.value))}>
+                            <option value={10}>10</option>
+                            <option value={20}>20</option>
+                            <option value={30}>30</option>
+                            <option value={50}>50</option>
+                            <option value={100}>100</option>
+                        </select>
+                    </div>
+                    
+                    <div className="flex gap-3">
+                        <ViewModeToggle mode={viewMode} setMode={setViewMode} />
+                        {!isReadOnly && (
+                            <button 
+                                onClick={() => handleOpenModal()} 
+                                disabled={selectedPartnerId === 'all'}
+                                title={selectedPartnerId === 'all' ? "Sélectionnez un partenaire pour ajouter" : ""}
+                                className={`bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors flex items-center gap-2 ${selectedPartnerId === 'all' ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'}`}
+                            >
+                                <Plus size={18} /> <span className="hidden sm:inline">Nouveau Véhicule</span>
+                            </button>
+                        )}
+                    </div>
                 </div>
             </div>
 
             {viewMode === 'grid' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {filteredVehicles.map(v => {
+                    {paginatedVehicles.map(v => {
                          const eq = equipementsData.find(e => e.vehicule_id === v.id);
                          return (
                             <div key={v.id} className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 relative group flex flex-col justify-between h-full hover:shadow-md transition-all">
@@ -220,7 +303,7 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                            {filteredVehicles.map(v => {
+                            {paginatedVehicles.map(v => {
                                 const eq = equipementsData.find(e => e.vehicule_id === v.id);
                                 return (
                                     <tr key={v.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
@@ -272,8 +355,32 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
                     </table>
                 </div>
             )}
+
+            {/* Footer Pagination */}
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mt-4 px-2">
+                <span className="text-sm text-slate-500 dark:text-slate-400">
+                    Affichage de <span className="font-semibold">{paginatedVehicles.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0}</span> à <span className="font-semibold">{Math.min(currentPage * itemsPerPage, filteredVehicles.length)}</span> sur <span className="font-semibold">{filteredVehicles.length}</span> résultats
+                </span>
+                <div className="flex items-center gap-2">
+                    <button 
+                        disabled={currentPage === 1} 
+                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                        className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    >
+                        <ChevronLeft size={18} />
+                    </button>
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-300 px-2">Page {currentPage} / {totalPages || 1}</span>
+                    <button 
+                        disabled={currentPage >= totalPages} 
+                        onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                        className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    >
+                        <ChevronRight size={18} />
+                    </button>
+                </div>
+            </div>
             
-            <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingId ? 'Modifier Véhicule' : 'Nouveau Véhicule'} footer={<><button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg">Annuler</button>{!isReadOnly && <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Enregistrer</button>}</>}>
+            <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingId ? 'Modifier Véhicule' : 'Nouveau Véhicule'} footer={<><button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg">Annuler</button>{!isReadOnly && <button onClick={handleSave} disabled={isSaving} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 disabled:opacity-70 disabled:cursor-wait">{isSaving && <Loader2 size={16} className="animate-spin" />}{isSaving ? 'Enregistrement...' : 'Enregistrer'}</button>}</>}>
                  <div className="space-y-4">
                      <div className="flex border-b border-slate-200 dark:border-slate-700 mb-4">
                          <button 
@@ -292,8 +399,8 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
 
                      {activeTab === 'general' && (
                          <div className="space-y-4 animate-fade-in">
-                             <FormInput label="Nom / Marque" value={formData.nom} onChange={(e:any) => setFormData({...formData, nom: e.target.value})} placeholder="Ex: Renault Master" disabled={isReadOnly} />
-                             <FormInput label="Immatriculation" value={formData.immatriculation} onChange={(e:any) => setFormData({...formData, immatriculation: e.target.value})} placeholder="AA-123-BB" disabled={isReadOnly} />
+                             <FormInput label="Nom / Marque" value={formData.nom} onChange={(e:any) => setFormData({...formData, nom: e.target.value})} placeholder="Ex: Renault Master" disabled={isReadOnly || isSaving} />
+                             <FormInput label="Immatriculation" value={formData.immatriculation} onChange={(e:any) => setFormData({...formData, immatriculation: e.target.value})} placeholder="AA-123-BB" disabled={isReadOnly || isSaving} />
                          </div>
                      )}
 
@@ -310,7 +417,7 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
                                          <span className={`font-semibold ${formData.balise ? 'text-green-800 dark:text-green-200' : 'text-slate-600 dark:text-slate-400'}`}>Balise GPS</span>
                                      </div>
                                      <label className="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" checked={formData.balise} onChange={(e) => setFormData({...formData, balise: e.target.checked})} className="sr-only peer" disabled={isReadOnly} />
+                                        <input type="checkbox" checked={formData.balise} onChange={(e) => setFormData({...formData, balise: e.target.checked})} className="sr-only peer" disabled={isReadOnly || isSaving} />
                                         <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-green-300 dark:peer-focus:ring-green-800 rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-green-600"></div>
                                     </label>
                                  </div>
@@ -322,7 +429,7 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
                                             onChange={(e:any) => setFormData({...formData, balise_detail: e.target.value})} 
                                             placeholder="Ex: 585KO" 
                                             className="transition-all"
-                                            disabled={isReadOnly}
+                                            disabled={isReadOnly || isSaving}
                                          />
                                      </div>
                                  )}
@@ -338,7 +445,7 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
                                          <span className={`font-semibold ${formData.camera ? 'text-blue-800 dark:text-blue-200' : 'text-slate-600 dark:text-slate-400'}`}>Caméra</span>
                                      </div>
                                      <label className="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" checked={formData.camera} onChange={(e) => setFormData({...formData, camera: e.target.checked})} className="sr-only peer" disabled={isReadOnly} />
+                                        <input type="checkbox" checked={formData.camera} onChange={(e) => setFormData({...formData, camera: e.target.checked})} className="sr-only peer" disabled={isReadOnly || isSaving} />
                                         <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
                                     </label>
                                  </div>
@@ -349,7 +456,7 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
                                             value={formData.camera_detail} 
                                             onChange={(e:any) => setFormData({...formData, camera_detail: e.target.value})} 
                                             placeholder="Ex: CAM556" 
-                                            disabled={isReadOnly}
+                                            disabled={isReadOnly || isSaving}
                                          />
                                      </div>
                                  )}
@@ -365,7 +472,7 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
                                          <span className={`font-semibold ${formData.detecteur_fatigue ? 'text-amber-800 dark:text-amber-200' : 'text-slate-600 dark:text-slate-400'}`}>Détecteur de fatigue</span>
                                      </div>
                                      <label className="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" checked={formData.detecteur_fatigue} onChange={(e) => setFormData({...formData, detecteur_fatigue: e.target.checked})} className="sr-only peer" disabled={isReadOnly} />
+                                        <input type="checkbox" checked={formData.detecteur_fatigue} onChange={(e) => setFormData({...formData, detecteur_fatigue: e.target.checked})} className="sr-only peer" disabled={isReadOnly || isSaving} />
                                         <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-amber-300 dark:peer-focus:ring-amber-800 rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-amber-600"></div>
                                     </label>
                                  </div>
@@ -376,7 +483,7 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
                                             value={formData.detecteur_fatigue_detail} 
                                             onChange={(e:any) => setFormData({...formData, detecteur_fatigue_detail: e.target.value})} 
                                             placeholder="Ex: DRT556" 
-                                            disabled={isReadOnly}
+                                            disabled={isReadOnly || isSaving}
                                          />
                                      </div>
                                  )}
@@ -396,8 +503,9 @@ export const Vehicles = ({ selectedPartnerId, partners, vehiclesData, setVehicle
                 footer={
                     <>
                         <button onClick={() => setDeleteAction(null)} className="flex-1 px-4 py-2.5 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl font-semibold">Annuler</button>
-                        <button onClick={confirmDelete} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2">
-                            <Trash2 size={18} /> Confirmer
+                        <button onClick={confirmDelete} disabled={isSaving} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-wait">
+                            {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />} 
+                            Confirmer
                         </button>
                     </>
                 }

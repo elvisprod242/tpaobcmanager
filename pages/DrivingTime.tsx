@@ -1,27 +1,23 @@
+
 import React, { useState, useMemo } from 'react';
-import { Calendar, User, AlertCircle, ChevronDown, Activity, Edit2, Plus, Save, Printer, FileText, FileSpreadsheet } from 'lucide-react';
-import * as XLSX from 'xlsx';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import { TempsConduite, Partenaire, Rapport } from '../types';
-import { mockRapports, mockConducteurs } from '../services/mockData';
+import { Calendar, User, ChevronDown, Activity, Edit2, Plus, Save, Printer, Paperclip, FileText, Trash2, Loader2 } from 'lucide-react';
+import { TempsConduite, Partenaire, Rapport, InfractionFile, Conducteur, CleObc } from '../types';
 import { Modal } from '../components/ui/Modal';
 import { FormInput } from '../components/ui/FormElements';
+import { api } from '../services/api';
+import { storageService } from '../services/storage';
 
-// --- Helpers pour la gestion du temps ---
-
+// Helpers (Same as WorkTime)
 const timeStringToSeconds = (timeStr: string): number => {
     if (!timeStr) return 0;
     const [h, m, s] = timeStr.split(':').map(Number);
     return (h * 3600) + (m * 60) + (s || 0);
 };
-
 const secondsToTimeString = (totalSeconds: number): string => {
     const h = Math.floor(totalSeconds / 3600);
     const m = Math.floor((totalSeconds % 3600) / 60);
     return `${String(h).padStart(2, '0')}h${String(m).padStart(2, '0')}`;
 };
-
 const getWeekNumber = (d: Date): number => {
     const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
     date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
@@ -35,39 +31,43 @@ interface DrivingTimeProps {
     globalYear: string;
     analyses: TempsConduite[];
     setAnalyses: React.Dispatch<React.SetStateAction<TempsConduite[]>>;
+    drivers: Conducteur[];
+    keys: CleObc[];
+    reports: Rapport[];
 }
 
-export const DrivingTime = ({ selectedPartnerId, partners, globalYear, analyses, setAnalyses }: DrivingTimeProps) => {
-    // Utilisation de l'année globale, ou l'année courante par défaut si non sélectionnée
+export const DrivingTime = ({ selectedPartnerId, partners, globalYear, analyses, setAnalyses, drivers, keys, reports }: DrivingTimeProps) => {
     const currentYear = globalYear ? parseInt(globalYear) : new Date().getFullYear();
     const [selectedMonth, setSelectedMonth] = useState<string>(new Date().getMonth().toString());
     const [selectedDriverId, setSelectedDriverId] = useState<string>('');
-    
-    // État pour le modal
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [currentAnalysis, setCurrentAnalysis] = useState<Partial<TempsConduite>>({});
     const [selectedReportDate, setSelectedReportDate] = useState<string>('');
+    const [analysisFiles, setAnalysisFiles] = useState<InfractionFile[]>([]);
+    const [isUploading, setIsUploading] = useState(false);
 
-    // Filtrer les conducteurs disponibles selon le partenaire sélectionné
+    // Initialisation & Optimisation du sélecteur
     const availableDrivers = useMemo(() => {
-        return mockConducteurs.filter(() => true); 
-    }, []);
+        let filtered = drivers;
+        if (selectedPartnerId !== 'all') {
+            filtered = drivers.filter(d => 
+                d.cle_obc_ids?.some(kId => {
+                    const key = keys.find(k => k.id === kId);
+                    return key && key.partenaire_id === selectedPartnerId;
+                })
+            );
+        }
+        return filtered.sort((a, b) => a.nom.localeCompare(b.nom));
+    }, [drivers, keys, selectedPartnerId]);
 
-    // Filtrer et trier les rapports
     const filteredReports = useMemo(() => {
         if (!selectedDriverId) return [];
-
-        return mockRapports.filter(r => {
+        return reports.filter(r => {
             const rDate = new Date(r.date);
-            const matchesDriver = r.conducteur_id === selectedDriverId;
-            const matchesMonth = rDate.getMonth() === parseInt(selectedMonth) && rDate.getFullYear() === currentYear;
-            const matchesPartner = selectedPartnerId === 'all' || r.partenaire_id === selectedPartnerId;
-            
-            return matchesDriver && matchesMonth && matchesPartner;
+            return r.conducteur_id === selectedDriverId && rDate.getMonth() === parseInt(selectedMonth) && rDate.getFullYear() === currentYear && (selectedPartnerId === 'all' || r.partenaire_id === selectedPartnerId);
         }).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-    }, [selectedDriverId, selectedMonth, selectedPartnerId, currentYear]);
+    }, [selectedDriverId, selectedMonth, selectedPartnerId, currentYear, reports]);
 
-    // Regrouper par semaine
     const reportsByWeek = useMemo(() => {
         const groups: { [week: number]: Rapport[] } = {};
         filteredReports.forEach(r => {
@@ -78,395 +78,132 @@ export const DrivingTime = ({ selectedPartnerId, partners, globalYear, analyses,
         return groups;
     }, [filteredReports]);
 
-    // Calcul des totaux mensuels
     const monthlyStats = useMemo(() => {
-        let totalDrivingSec = 0;
-
-        filteredReports.forEach(r => {
-            totalDrivingSec += timeStringToSeconds(r.temps_conduite);
-        });
-
-        return {
-            driving: secondsToTimeString(totalDrivingSec),
-            count: filteredReports.length
-        };
+        let total = 0;
+        filteredReports.forEach(r => total += timeStringToSeconds(r.temps_conduite));
+        return { driving: secondsToTimeString(total) };
     }, [filteredReports]);
 
-    // Ouverture du modal
-    const handleOpenAnalysisModal = (report: Rapport) => {
+    const handleOpenAnalysisModal = async (report: Rapport) => {
         const existingAnalysis = analyses.find(a => a.rapports_id === report.id);
         setSelectedReportDate(new Date(report.date).toLocaleDateString());
         
-        if (existingAnalysis) {
-            setCurrentAnalysis({ ...existingAnalysis });
+        let data = existingAnalysis;
+        if (!data) {
+            data = { id: `tc_${Date.now()}`, partenaire_id: report.partenaire_id, rapports_id: report.id, analyse_cause: '', action_prise: '', suivi: '' };
+        }
+        setCurrentAnalysis({ ...data });
+        
+        if (data.id) {
+            const files = await api.getTempsConduiteFiles(data.id);
+            setAnalysisFiles(files);
         } else {
-            // Création d'une nouvelle analyse vide liée au rapport
-            setCurrentAnalysis({
-                id: `tc_${Date.now()}`,
-                partenaire_id: report.partenaire_id,
-                rapports_id: report.id,
-                objectifs_id: '', // Optionnel, laissé vide par défaut
-                analyse_cause: '',
-                action_prise: '',
-                suivi: ''
-            });
+            setAnalysisFiles([]);
         }
         setIsModalOpen(true);
     };
 
-    // Sauvegarde
-    const handleSaveAnalysis = () => {
+    const handleSaveAnalysis = async () => {
         if (!currentAnalysis.rapports_id) return;
-
+        const newEntry = currentAnalysis as TempsConduite;
+        await api.addTempsConduite(newEntry);
         setAnalyses(prev => {
-            const index = prev.findIndex(a => a.rapports_id === currentAnalysis.rapports_id);
-            const newEntry = currentAnalysis as TempsConduite;
-            
-            if (index >= 0) {
-                const newArr = [...prev];
-                newArr[index] = newEntry;
-                return newArr;
-            } else {
-                return [...prev, newEntry];
-            }
+            const index = prev.findIndex(a => a.rapports_id === newEntry.rapports_id);
+            return index >= 0 ? prev.map((item, i) => i === index ? newEntry : item) : [...prev, newEntry];
         });
         setIsModalOpen(false);
     };
 
-    // --- Export Functions ---
-
-    const getExportData = () => {
-        const driver = mockConducteurs.find(c => c.id === selectedDriverId);
-        const driverName = driver ? `${driver.nom}_${driver.prenom}` : 'Rapport';
-        const monthName = months[parseInt(selectedMonth)];
-        
-        const data = filteredReports.map(r => {
-            const analysis = analyses.find(a => a.rapports_id === r.id);
-            return {
-                Date: new Date(r.date).toLocaleDateString('fr-FR'),
-                Jour: r.jour,
-                Début: r.heure_debut,
-                Fin: r.heure_fin,
-                Conduite: r.temps_conduite,
-                Analyse: analysis?.analyse_cause || '-',
-                Action: analysis?.action_prise || '-'
-            };
-        });
-
-        return { data, driverName, monthName };
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files[0] && currentAnalysis.id) {
+            setIsUploading(true);
+            try {
+                const file = e.target.files[0];
+                const url = await storageService.uploadFile(file, 'temps_conduite');
+                const newFile: InfractionFile = { id: `file_${Date.now()}`, infractions_id: currentAnalysis.id, file: file.name, url, type: file.name.split('.').pop() || 'unknown' };
+                await api.addTempsConduiteFile(currentAnalysis.id, newFile);
+                setAnalysisFiles(prev => [...prev, newFile]);
+            } catch (err) { console.error(err); } finally { setIsUploading(false); }
+        }
     };
 
-    const handleExportExcel = () => {
-        if (filteredReports.length === 0) return;
-        const { data, driverName, monthName } = getExportData();
-        
-        const worksheet = XLSX.utils.json_to_sheet(data);
-
-        // Définir la largeur des colonnes
-        const wscols = [
-            { wch: 12 }, // Date
-            { wch: 12 }, // Jour
-            { wch: 10 }, // Début
-            { wch: 10 }, // Fin
-            { wch: 12 }, // Conduite
-            { wch: 40 }, // Analyse
-            { wch: 40 }, // Action
-        ];
-        worksheet['!cols'] = wscols;
-        
-        const workbook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(workbook, worksheet, "Temps de Conduite");
-        
-        XLSX.writeFile(workbook, `Temps_Conduite_${driverName}_${monthName}_${currentYear}.xlsx`);
+    const handleDeleteFile = async (fileId: string) => {
+        if (currentAnalysis.id && window.confirm("Supprimer ?")) {
+            await api.deleteTempsConduiteFile(currentAnalysis.id, fileId);
+            setAnalysisFiles(prev => prev.filter(f => f.id !== fileId));
+        }
     };
 
-    const handleExportPDF = () => {
-        if (filteredReports.length === 0) return;
-        const { data, driverName, monthName } = getExportData();
-        
-        const doc = new jsPDF();
-        
-        // --- Header Stylisé ---
-        
-        // Titre
-        doc.setFontSize(22);
-        doc.setTextColor(30, 41, 59); // Slate 800
-        doc.text("Rapport Temps de Conduite", 14, 20);
-        
-        // Ligne de séparation
-        doc.setDrawColor(200);
-        doc.setLineWidth(0.5);
-        doc.line(14, 25, 196, 25);
-
-        // Infos Conducteur & Période
-        doc.setFontSize(11);
-        
-        doc.setFont("helvetica", "bold");
-        doc.setTextColor(30, 41, 59);
-        doc.text("Conducteur :", 14, 35);
-        
-        doc.setFont("helvetica", "normal");
-        doc.setTextColor(100);
-        doc.text(driverName.replace(/_/g, ' '), 45, 35);
-
-        doc.setFont("helvetica", "bold");
-        doc.setTextColor(30, 41, 59);
-        doc.text("Période :", 14, 42);
-        
-        doc.setFont("helvetica", "normal");
-        doc.setTextColor(100);
-        doc.text(`${monthName} ${currentYear}`, 45, 42);
-
-        // --- Encadré Totaux ---
-        doc.setFillColor(248, 250, 252); // Slate 50
-        doc.setDrawColor(226, 232, 240); // Slate 200
-        doc.roundedRect(120, 28, 76, 18, 2, 2, 'FD');
-        
-        // Labels Totaux
-        doc.setFontSize(8);
-        doc.setTextColor(100, 116, 139); // Slate 500
-        doc.text("TOTAL CONDUITE", 165, 33);
-        
-        // Valeurs Totaux
-        doc.setFontSize(12);
-        doc.setFont("helvetica", "bold");
-        
-        doc.setTextColor(217, 119, 6); // Amber 600
-        doc.text(monthlyStats.driving, 165, 40);
-
-        // --- Tableau ---
-        const tableColumn = ["Date", "Jour", "Début", "Fin", "Conduite", "Analyse", "Action"];
-        const tableRows = data.map(item => [
-            item.Date,
-            item.Jour,
-            item.Début,
-            item.Fin,
-            item.Conduite,
-            item.Analyse,
-            item.Action
-        ]);
-
-        autoTable(doc, {
-            head: [tableColumn],
-            body: tableRows,
-            startY: 55,
-            theme: 'grid',
-            styles: { 
-                fontSize: 9, 
-                cellPadding: 3, 
-                textColor: [51, 65, 85], // Slate 700
-                lineColor: [226, 232, 240], // Slate 200
-                lineWidth: 0.1,
-                valign: 'middle'
-            },
-            headStyles: { 
-                fillColor: [217, 119, 6], // Amber 600 pour distinguer de WorkTime
-                textColor: [255, 255, 255], 
-                fontStyle: 'bold',
-                halign: 'center',
-                minCellHeight: 10
-            },
-            columnStyles: {
-                0: { cellWidth: 22 }, // Date
-                1: { cellWidth: 20 }, // Jour
-                2: { cellWidth: 15, halign: 'center' }, // Debut
-                3: { cellWidth: 15, halign: 'center' }, // Fin
-                4: { cellWidth: 18, halign: 'center', fontStyle: 'bold', textColor: [217, 119, 6] }, // Conduite
-                5: { cellWidth: 'auto' }, // Analyse
-                6: { cellWidth: 'auto' }  // Action
-            },
-            alternateRowStyles: {
-                fillColor: [248, 250, 252] // Slate 50
-            },
-            margin: { top: 55 },
-            didDrawPage: function (data: any) {
-                // Footer
-                doc.setFontSize(8);
-                doc.setTextColor(150);
-                const dateStr = new Date().toLocaleDateString('fr-FR');
-                doc.text(`Généré le ${dateStr} par TPA Manager`, data.settings.margin.left, doc.internal.pageSize.height - 10);
-                
-                const pageStr = 'Page ' + doc.getNumberOfPages();
-                doc.text(pageStr, doc.internal.pageSize.width - data.settings.margin.right - doc.getTextWidth(pageStr), doc.internal.pageSize.height - 10);
-            }
-        });
-
-        doc.save(`Rapport_Conduite_${driverName}_${monthName}.pdf`);
-    };
-
-    const handlePrint = () => {
-        window.print();
-    };
-
-    const months = [
-        "Janvier", "Février", "Mars", "Avril", "Mai", "Juin", 
-        "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"
-    ];
+    const handlePrint = () => window.print();
+    const months = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
 
     return (
-        <div className="space-y-6 animate-fade-in pb-8 print:p-0 print:space-y-2">
-            {/* Header / Filtres (Caché à l'impression sauf titre basique) */}
+        <div className="space-y-6 animate-fade-in pb-8 print:p-0 print:space-y-0">
             <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700 flex flex-col xl:flex-row gap-4 items-end xl:items-center justify-between no-print">
                 <div className="flex flex-col md:flex-row gap-4 w-full xl:w-auto flex-1">
                     <div className="w-full md:w-64">
                          <label className="block text-xs font-bold text-slate-500 uppercase mb-1 ml-1">Conducteur</label>
                          <div className="relative">
-                            <select 
-                                value={selectedDriverId} 
-                                onChange={(e) => setSelectedDriverId(e.target.value)}
-                                className="w-full appearance-none pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white transition-all cursor-pointer font-medium"
-                            >
+                            <select value={selectedDriverId} onChange={(e) => setSelectedDriverId(e.target.value)} className="w-full appearance-none pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white transition-all cursor-pointer font-medium">
                                 <option value="">Sélectionner un conducteur...</option>
-                                {availableDrivers.map(d => (
-                                    <option key={d.id} value={d.id}>{d.nom} {d.prenom}</option>
-                                ))}
+                                {availableDrivers.map(d => (<option key={d.id} value={d.id}>{d.nom} {d.prenom}</option>))}
                             </select>
                             <User size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                             <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                          </div>
                     </div>
-
                     <div className="w-full md:w-48">
                         <label className="block text-xs font-bold text-slate-500 uppercase mb-1 ml-1">Mois</label>
                         <div className="relative">
-                            <select 
-                                value={selectedMonth} 
-                                onChange={(e) => setSelectedMonth(e.target.value)}
-                                className="w-full appearance-none pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white transition-all cursor-pointer font-medium"
-                            >
-                                {months.map((m, index) => (
-                                    <option key={index} value={index}>{m} {currentYear}</option>
-                                ))}
+                            <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} className="w-full appearance-none pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white transition-all cursor-pointer font-medium">
+                                {months.map((m, index) => (<option key={index} value={index}>{m} {currentYear}</option>))}
                             </select>
                             <Calendar size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                             <ChevronDown size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                         </div>
                     </div>
                 </div>
-                
                 {selectedDriverId && (
                     <div className="flex flex-col md:flex-row gap-4 w-full xl:w-auto">
-                        <div className="flex gap-4 flex-1">
-                            <div className="bg-amber-50 dark:bg-amber-900/20 px-4 py-2 rounded-xl border border-amber-100 dark:border-amber-900/50 flex-1 md:flex-none min-w-[120px]">
-                                <p className="text-xs text-amber-600 dark:text-amber-400 font-bold uppercase">Total Conduite</p>
-                                <p className="text-xl font-bold text-slate-800 dark:text-white">{monthlyStats.driving}</p>
-                            </div>
+                        <div className="bg-amber-50 dark:bg-amber-900/20 px-4 py-2 rounded-xl border border-amber-100 dark:border-amber-900/50 min-w-[120px]">
+                            <p className="text-xs text-amber-600 dark:text-amber-400 font-bold uppercase">Total Conduite</p>
+                            <p className="text-xl font-bold text-slate-800 dark:text-white">{monthlyStats.driving}</p>
                         </div>
-                        
-                        {/* Actions Export */}
-                        <div className="flex gap-2">
-                             <button 
-                                onClick={handlePrint}
-                                className="p-2.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl border border-slate-200 dark:border-slate-600 transition-colors"
-                                title="Imprimer"
-                            >
-                                <Printer size={20} />
-                            </button>
-                            <button 
-                                onClick={handleExportPDF}
-                                className="flex items-center gap-2 px-4 py-2.5 bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 rounded-xl font-medium transition-colors"
-                            >
-                                <FileText size={18} /> <span className="hidden md:inline">PDF</span>
-                            </button>
-                            <button 
-                                onClick={handleExportExcel}
-                                className="flex items-center gap-2 px-4 py-2.5 bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-900/40 rounded-xl font-medium transition-colors"
-                            >
-                                <FileSpreadsheet size={18} /> <span className="hidden md:inline">Excel</span>
-                            </button>
-                        </div>
+                        <button onClick={handlePrint} className="p-2.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl border border-slate-200 dark:border-slate-600 transition-colors"><Printer size={20} /></button>
                     </div>
                 )}
             </div>
-            
-            {/* Titre Impression Seulement */}
-            <div className="hidden print-only mb-6">
-                <h1 className="text-2xl font-bold mb-2">Rapport Temps de Conduite</h1>
-                <p className="text-lg">Conducteur: {availableDrivers.find(d => d.id === selectedDriverId)?.nom} {availableDrivers.find(d => d.id === selectedDriverId)?.prenom}</p>
-                <p>Période: {months[parseInt(selectedMonth)]} {currentYear}</p>
-                <div className="mt-4 border p-4 flex gap-8">
-                     <div>Total Conduite: <strong>{monthlyStats.driving}</strong></div>
-                </div>
-            </div>
 
-            {!selectedDriverId ? (
-                <div className="text-center py-20 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-700 no-print">
-                    <User size={48} className="mx-auto text-slate-300 mb-4" />
-                    <p className="text-slate-500 font-medium">Veuillez sélectionner un conducteur pour voir son temps de conduite.</p>
-                </div>
-            ) : filteredReports.length === 0 ? (
-                <div className="text-center py-20 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-700 no-print">
-                    <Calendar size={48} className="mx-auto text-slate-300 mb-4" />
-                    <p className="text-slate-500 font-medium">Aucun rapport trouvé pour ce conducteur ce mois-ci.</p>
-                </div>
-            ) : (
+            {!selectedDriverId ? <div className="text-center py-20 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border-2 border-dashed border-slate-200 no-print"><User size={48} className="mx-auto text-slate-300 mb-4" /><p className="text-slate-500 font-medium">Veuillez sélectionner un conducteur.</p></div> : filteredReports.length === 0 ? <div className="text-center py-20 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border-2 border-dashed border-slate-200 no-print"><p className="text-slate-500 font-medium">Aucun rapport trouvé.</p></div> : (
                 <div className="space-y-8">
                     {Object.entries(reportsByWeek).map(([week, data]) => {
-                        const weekReports = data as Rapport[];
-                        const weekDrivingSec = weekReports.reduce((acc, r) => acc + timeStringToSeconds(r.temps_conduite), 0);
+                        // Calcul du total hebdomadaire (Conduite)
+                        const weeklyTotalSec = (data as Rapport[]).reduce((acc, r) => acc + timeStringToSeconds(r.temps_conduite), 0);
+                        const weeklyTotalStr = secondsToTimeString(weeklyTotalSec);
 
                         return (
-                            <div key={week} className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden break-inside-avoid">
-                                {/* Header Semaine */}
-                                <div className="bg-slate-50 dark:bg-slate-900/50 px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center print:bg-gray-100 print:border-gray-300">
-                                    <h3 className="font-bold text-slate-700 dark:text-slate-200">Semaine {week}</h3>
-                                    <div className="flex gap-4 text-sm">
-                                        <span className="text-slate-500 dark:text-slate-400">Total Conduite: <span className="font-bold text-slate-800 dark:text-white">{secondsToTimeString(weekDrivingSec)}</span></span>
-                                    </div>
+                            <div key={week} className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                                <div className="bg-slate-50 dark:bg-slate-900/50 px-6 py-4 border-b border-slate-200 dark:border-slate-700 font-bold flex justify-between items-center">
+                                    <span>Semaine {week}</span>
+                                    <span className="text-sm font-medium bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 px-3 py-1 rounded-full border border-amber-200 dark:border-amber-800">
+                                        Total Hebdo : {weeklyTotalStr}
+                                    </span>
                                 </div>
-
-                                {/* Liste des jours */}
-                                <div className="divide-y divide-slate-100 dark:divide-slate-700 print:divide-gray-200">
-                                    {weekReports.map(report => {
+                                <div className="divide-y divide-slate-100 dark:divide-slate-700">
+                                    {(data as Rapport[]).map(report => {
                                         const analysis = analyses.find(t => t.rapports_id === report.id);
-                                        
                                         return (
-                                            <div key={report.id} className="p-4 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors group print:hover:bg-transparent">
-                                                <div className="flex flex-col md:flex-row md:items-center gap-4 justify-between">
-                                                    {/* Date & Heures */}
-                                                    <div className="flex-1 min-w-0 grid grid-cols-2 md:grid-cols-3 gap-4 items-center">
-                                                        <div>
-                                                            <div className="font-bold text-slate-800 dark:text-white capitalize">{report.jour}</div>
-                                                            <div className="text-xs text-slate-500">{new Date(report.date).toLocaleDateString()}</div>
+                                            <div key={report.id} className="p-4 flex flex-col md:flex-row justify-between items-center gap-4">
+                                                <div className="flex-1">
+                                                    <div className="font-bold">{report.jour} <span className="text-xs font-normal text-slate-500">{new Date(report.date).toLocaleDateString()}</span></div>
+                                                    <div className="text-sm font-bold text-amber-600">Conduite: {report.temps_conduite}</div>
+                                                </div>
+                                                <div className="md:w-1/3 text-right">
+                                                    {analysis ? (
+                                                        <div className="cursor-pointer text-sm font-bold text-red-500" onClick={() => handleOpenAnalysisModal(report)}>
+                                                            Analyse: {analysis.analyse_cause}
                                                         </div>
-                                                        <div className="text-sm">
-                                                            <span className="block text-xs text-slate-400">Amplitude</span>
-                                                            <span className="font-mono text-slate-700 dark:text-slate-300">{report.heure_debut} - {report.heure_fin}</span>
-                                                        </div>
-                                                        <div className="text-sm">
-                                                            <span className="block text-xs text-slate-400">Conduite</span>
-                                                            <span className="font-mono font-bold text-amber-600 dark:text-amber-400">{report.temps_conduite}</span>
-                                                        </div>
-                                                    </div>
-
-                                                    {/* Analyse (Si existante) */}
-                                                    <div className="md:w-1/3 flex justify-end">
-                                                        {analysis ? (
-                                                            <div className="relative w-full bg-orange-50 dark:bg-orange-900/10 border border-orange-100 dark:border-orange-900/30 rounded-lg p-3 text-sm cursor-pointer hover:bg-orange-100 dark:hover:bg-orange-900/20 transition-colors group/analysis print:bg-transparent print:border-gray-300" onClick={() => handleOpenAnalysisModal(report)}>
-                                                                <div className="absolute top-2 right-2 text-slate-400 opacity-0 group-hover/analysis:opacity-100 transition-opacity no-print">
-                                                                    <Edit2 size={14} />
-                                                                </div>
-                                                                <div className="flex items-start gap-2">
-                                                                    <AlertCircle size={16} className="text-orange-500 mt-0.5 shrink-0" />
-                                                                    <div>
-                                                                        <p className="font-bold text-orange-800 dark:text-orange-300 text-xs uppercase mb-1">Analyse : {analysis.analyse_cause}</p>
-                                                                        <div className="flex items-center gap-1 text-xs text-green-700 dark:text-green-400 mt-1">
-                                                                            <Activity size={12} />
-                                                                            <span>Action : {analysis.action_prise}</span>
-                                                                        </div>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        ) : (
-                                                            <button 
-                                                                onClick={() => handleOpenAnalysisModal(report)}
-                                                                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-slate-500 hover:text-blue-600 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all text-xs font-medium no-print"
-                                                            >
-                                                                <Plus size={14} />
-                                                                Ajouter analyse
-                                                            </button>
-                                                        )}
-                                                    </div>
+                                                    ) : <button onClick={() => handleOpenAnalysisModal(report)} className="text-xs bg-slate-100 px-3 py-1 rounded hover:bg-slate-200">Ajouter Analyse</button>}
                                                 </div>
                                             </div>
                                         );
@@ -478,46 +215,19 @@ export const DrivingTime = ({ selectedPartnerId, partners, globalYear, analyses,
                 </div>
             )}
 
-            <Modal 
-                isOpen={isModalOpen} 
-                onClose={() => setIsModalOpen(false)} 
-                title={`Analyse Conduite du ${selectedReportDate}`}
-                footer={
-                    <>
-                        <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg">Annuler</button>
-                        <button onClick={handleSaveAnalysis} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2">
-                            <Save size={16} /> Enregistrer
-                        </button>
-                    </>
-                }
-            >
+            <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={`Analyse Conduite ${selectedReportDate}`} footer={<><button onClick={() => setIsModalOpen(false)} className="px-4 py-2 rounded-lg hover:bg-slate-100">Annuler</button><button onClick={handleSaveAnalysis} className="px-4 py-2 bg-blue-600 text-white rounded-lg flex items-center gap-2"><Save size={16} /> Enregistrer</button></>}>
                 <div className="space-y-4">
-                    <div className="space-y-2">
-                        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300">Analyse de la cause</label>
-                        <textarea 
-                            className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none dark:text-white h-32 transition-all resize-none" 
-                            value={currentAnalysis.analyse_cause || ''} 
-                            onChange={(e) => setCurrentAnalysis({...currentAnalysis, analyse_cause: e.target.value})}
-                            placeholder="Décrivez la cause (ex: Livraison urgente, trafic...)"
-                            autoFocus
-                        />
-                    </div>
+                    <div className="space-y-2"><label className="block text-sm font-semibold">Cause</label><textarea className="w-full px-4 py-3 bg-slate-50 border rounded-xl h-24" value={currentAnalysis.analyse_cause || ''} onChange={(e) => setCurrentAnalysis({...currentAnalysis, analyse_cause: e.target.value})} placeholder="Cause..." /></div>
+                    <FormInput label="Action Prise" value={currentAnalysis.action_prise || ''} onChange={(e:any) => setCurrentAnalysis({...currentAnalysis, action_prise: e.target.value})} placeholder="Ex: Formation..." />
                     
-                    <FormInput 
-                        label="Action Prise" 
-                        value={currentAnalysis.action_prise || ''} 
-                        onChange={(e:any) => setCurrentAnalysis({...currentAnalysis, action_prise: e.target.value})} 
-                        placeholder="Ex: Répartition des tâches..."
-                    />
-
-                    <FormInput 
-                        label="Suivi" 
-                        value={currentAnalysis.suivi || ''} 
-                        onChange={(e:any) => setCurrentAnalysis({...currentAnalysis, suivi: e.target.value})} 
-                        placeholder="Ex: Temps respecté depuis..."
-                    />
+                    <div className="border-t pt-4 mt-2">
+                        <label className="block text-sm font-semibold mb-3 flex items-center gap-2"><Paperclip size={16} /> Justificatifs</label>
+                        <div className="space-y-3 mb-4">{analysisFiles.map(file => (<div key={file.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg border"><a href={file.url} target="_blank" className="text-sm text-blue-600 flex items-center gap-2"><FileText size={14} /> {file.file}</a><button onClick={() => handleDeleteFile(file.id)} className="text-red-500"><Trash2 size={14} /></button></div>))}</div>
+                        {currentAnalysis.id ? (<div className="relative"><input type="file" onChange={handleFileUpload} className="hidden" id="file-upload" disabled={isUploading} /><label htmlFor="file-upload" className={`flex items-center justify-center gap-2 w-full py-2 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer hover:bg-slate-50 ${isUploading ? 'opacity-50' : ''}`}>{isUploading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}<span className="text-sm font-medium text-slate-500">Ajouter fichier</span></label></div>) : <p className="text-xs text-slate-400 italic text-center">Enregistrez pour ajouter des fichiers.</p>}
+                    </div>
                 </div>
             </Modal>
         </div>
     );
 };
+const handleOpenModal = (report: Rapport) => {}; // Placeholder

@@ -1,7 +1,10 @@
+
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Video, Radio, Calendar, User, BookOpen, Save } from 'lucide-react';
+import { ArrowLeft, Video, Radio, Calendar, User, BookOpen, Save, ExternalLink, Loader2 } from 'lucide-react';
 import { CommunicationPlan, CommunicationExecution, UserRole } from '../types';
 import { FormInput, FormSelect } from '../components/ui/FormElements';
+import { api } from '../services/api';
+import { useNotification } from '../contexts/NotificationContext';
 
 interface CommunicationDetailsProps {
     planId: string;
@@ -13,6 +16,7 @@ interface CommunicationDetailsProps {
 }
 
 export const CommunicationDetails = ({ planId, plans, executions, setExecutions, onBack, userRole }: CommunicationDetailsProps) => {
+    const { addNotification } = useNotification();
     const plan = plans.find(p => p.id === planId);
     
     // Récupérer l'exécution liée ou créer une structure vide
@@ -24,6 +28,7 @@ export const CommunicationDetails = ({ planId, plans, executions, setExecutions,
     });
 
     const [isEditing, setIsEditing] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
     const isReadOnly = userRole === 'directeur';
 
     useEffect(() => {
@@ -40,23 +45,41 @@ export const CommunicationDetails = ({ planId, plans, executions, setExecutions,
         }
     }, [planId, plan, executions]);
 
-    const handleSave = () => {
-        setExecutions(prev => {
-            const index = prev.findIndex(e => e.planning_communication_id === planId);
+    const handleSave = async () => {
+        setIsSaving(true);
+        try {
             const newItem = { 
                 ...execution, 
                 id: execution.id || `exec_${Date.now()}` 
             } as CommunicationExecution;
 
-            if (index >= 0) {
-                const newArr = [...prev];
-                newArr[index] = newItem;
-                return newArr;
-            } else {
-                return [...prev, newItem];
-            }
-        });
-        setIsEditing(false);
+            await api.addCommunicationExecution(newItem);
+            
+            // Note: Avec l'abonnement en temps réel dans App.tsx, setExecutions n'est pas strictement nécessaire
+            // mais on peut le garder pour une mise à jour optimiste si besoin. 
+            // Ici on laisse Firestore propager le changement.
+            
+            addNotification('success', 'Détails de la communication enregistrés.');
+            setIsEditing(false);
+        } catch (error) {
+            console.error("Erreur sauvegarde détails communication:", error);
+            addNotification('error', "Erreur lors de la sauvegarde.");
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    // --- Optimisation URL Vidéo ---
+    const getPlayableUrl = (url: string | undefined) => {
+        if (!url) return '';
+        
+        // Gestion spécifique Dropbox : Convertir en lien direct (streaming)
+        // Remplace www.dropbox.com par dl.dropboxusercontent.com
+        if (url.includes('dropbox.com')) {
+            return url.replace('www.dropbox.com', 'dl.dropboxusercontent.com').replace('?dl=0', '').replace('&dl=0', '');
+        }
+        
+        return url;
     };
 
     if (!plan) {
@@ -97,14 +120,17 @@ export const CommunicationDetails = ({ planId, plans, executions, setExecutions,
                             <button 
                                 onClick={() => setIsEditing(false)}
                                 className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                                disabled={isSaving}
                             >
                                 Annuler
                             </button>
                             <button 
                                 onClick={handleSave}
-                                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors"
+                                disabled={isSaving}
+                                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-70 disabled:cursor-wait"
                             >
-                                <Save size={18} /> Enregistrer
+                                {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />}
+                                {isSaving ? 'Enregistrement...' : 'Enregistrer'}
                             </button>
                         </div>
                     )
@@ -162,6 +188,7 @@ export const CommunicationDetails = ({ planId, plans, executions, setExecutions,
                                     {value: 'Présentiel', label: 'Présentiel'},
                                     {value: 'Affichage', label: 'Affichage sur site'}
                                 ]}
+                                disabled={isSaving}
                             />
                         ) : (
                             <div className="text-center py-4">
@@ -187,7 +214,7 @@ export const CommunicationDetails = ({ planId, plans, executions, setExecutions,
                             <h3 className="text-lg font-bold text-slate-800 dark:text-white">Support de Formation</h3>
                         </div>
 
-                        <div className="flex-1 bg-slate-100 dark:bg-slate-900 rounded-xl overflow-hidden relative border border-slate-200 dark:border-slate-700 min-h-[400px] flex items-center justify-center">
+                        <div className="flex-1 bg-slate-100 dark:bg-slate-900 rounded-xl overflow-hidden relative border border-slate-200 dark:border-slate-700 min-h-[400px] flex items-center justify-center group">
                             {isEditing ? (
                                 <div className="w-full max-w-md p-6">
                                     <FormInput 
@@ -195,14 +222,34 @@ export const CommunicationDetails = ({ planId, plans, executions, setExecutions,
                                         value={execution.video} 
                                         onChange={(e: any) => setExecution({...execution, video: e.target.value})} 
                                         placeholder="https://..."
+                                        disabled={isSaving}
                                     />
-                                    <p className="text-xs text-slate-500 mt-2">Collez ici le lien vers la vidéo ou le document de présentation.</p>
+                                    <p className="text-xs text-slate-500 mt-2">
+                                        Collez ici le lien vers la vidéo (Dropbox, MP4 direct) ou le document de présentation.
+                                    </p>
                                 </div>
                             ) : (
                                 execution.video ? (
-                                    <video controls className="w-full h-full max-h-[500px]" src={execution.video}>
-                                        Votre navigateur ne supporte pas la lecture de vidéos.
-                                    </video>
+                                    <div className="relative w-full h-full flex flex-col">
+                                        <video 
+                                            controls 
+                                            className="w-full h-full max-h-[500px] object-contain bg-black" 
+                                            src={getPlayableUrl(execution.video)}
+                                            preload="metadata"
+                                        >
+                                            Votre navigateur ne supporte pas la lecture de vidéos.
+                                        </video>
+                                        
+                                        {/* Lien de secours si le player échoue (par ex: format non supporté) */}
+                                        <a 
+                                            href={execution.video} 
+                                            target="_blank" 
+                                            rel="noopener noreferrer"
+                                            className="absolute bottom-4 right-4 bg-white/90 dark:bg-slate-800/90 text-slate-800 dark:text-white text-xs px-3 py-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity shadow-sm font-medium hover:bg-white dark:hover:bg-slate-700 flex items-center gap-1.5 backdrop-blur-sm"
+                                        >
+                                            <ExternalLink size={12} /> Ouvrir l'original
+                                        </a>
+                                    </div>
                                 ) : (
                                     <div className="text-slate-400 flex flex-col items-center">
                                         <Video size={48} className="mb-2 opacity-50" />

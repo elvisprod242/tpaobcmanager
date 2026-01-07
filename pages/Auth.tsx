@@ -1,8 +1,10 @@
 
 import React, { useState } from 'react';
-import { Mail, Lock, User, ArrowRight, Eye, EyeOff, Truck, AlertCircle, Shield, Check, CheckCircle } from 'lucide-react';
-import { User as UserType } from '../types';
+import { Mail, Lock, User, ArrowRight, Eye, EyeOff, AlertCircle, Briefcase } from 'lucide-react';
+import { User as UserType, UserRole } from '../types';
 import { api } from '../services/api';
+import { auth } from '../services/firebase';
+import * as FirebaseAuth from 'firebase/auth';
 
 interface AuthProps {
     onLogin: (user: UserType) => void;
@@ -13,26 +15,18 @@ export const Auth = ({ onLogin }: AuthProps) => {
     const [isLoading, setIsLoading] = useState(false);
     const [showPassword, setShowPassword] = useState(false);
     const [error, setError] = useState('');
-    const [justFilled, setJustFilled] = useState(false);
 
     const [formData, setFormData] = useState({
         email: '',
         password: '',
         name: '',
-        company: ''
+        role: 'obc' as UserRole // Par défaut
     });
 
-    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
         setFormData(prev => ({ ...prev, [name]: value }));
         if (error) setError('');
-    };
-
-    const fillCredentials = (email: string, pass: string) => {
-        setFormData(prev => ({ ...prev, email, password: pass }));
-        setError('');
-        setJustFilled(true);
-        setTimeout(() => setJustFilled(false), 1000);
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -40,95 +34,91 @@ export const Auth = ({ onLogin }: AuthProps) => {
         setError('');
         setIsLoading(true);
 
-        // Simulation de délai réseau
-        await new Promise(resolve => setTimeout(resolve, 800));
-
         try {
             if (isLogin) {
-                // --- LOGIN LOCAL SIMULÉ ---
-                // Vérification des comptes de démo par défaut
-                if (formData.email === 'directeur@tpa.com' && formData.password === 'directeur') {
-                    const mockUser: UserType = {
-                        id: 'demo_dir_1',
-                        email: formData.email,
-                        username: 'directeur',
-                        nom: 'Général',
-                        prenom: 'Directeur',
-                        role: 'directeur',
-                        avatarUrl: ''
-                    };
-                    onLogin(mockUser);
-                    return;
-                }
-                
-                if (formData.email === 'obc@tpa.com' && formData.password === 'obc123') {
-                    const mockUser: UserType = {
-                        id: 'demo_obc_1',
-                        email: formData.email,
-                        username: 'obc',
-                        nom: 'Manager',
-                        prenom: 'OBC',
-                        role: 'obc',
-                        avatarUrl: ''
-                    };
-                    onLogin(mockUser);
-                    return;
-                }
-
-                // Vérification contre la base locale (utilisateurs inscrits)
-                // Note: Dans un vrai système, il faudrait hacher le mot de passe. Ici, c'est une démo locale.
-                const usersStr = localStorage.getItem('db_users_auth');
-                const localUsers = usersStr ? JSON.parse(usersStr) : [];
-                const userFound = localUsers.find((u: any) => u.email === formData.email && u.password === formData.password);
-
-                if (userFound) {
-                    // Récupérer le profil complet via l'API
-                    const profile = await api.getUserProfile(userFound.id);
-                    if (profile) {
-                        onLogin(profile);
+                // --- LOGIN FIREBASE ---
+                try {
+                    const userCredential = await FirebaseAuth.signInWithEmailAndPassword(auth, formData.email, formData.password);
+                    const uid = userCredential.user.uid;
+                    
+                    // Récupération du profil complet (avec Rôle) depuis Firestore via l'API
+                    const userProfile = await api.getUserProfile(uid);
+                    
+                    if (userProfile) {
+                        onLogin(userProfile);
                     } else {
-                        // Fallback si profil manquant
-                        onLogin({
-                            id: userFound.id,
-                            email: userFound.email,
-                            username: 'user',
+                        // Cas rare : Auth existe mais pas le profil Firestore (ex: créé manuellement dans console)
+                        // On crée un profil par défaut
+                        const fallbackUser: UserType = {
+                            id: uid,
+                            email: formData.email,
+                            username: formData.email.split('@')[0],
                             nom: 'Utilisateur',
-                            prenom: 'Local',
-                            role: 'obc'
-                        });
+                            prenom: '',
+                            role: 'obc', // Rôle par défaut si inconnu
+                            avatarUrl: ''
+                        };
+                        await api.createUserProfile(fallbackUser);
+                        onLogin(fallbackUser);
                     }
-                } else {
-                    throw new Error("Email ou mot de passe incorrect.");
+                } catch (loginError: any) {
+                    // --- GESTION AUTOMATIQUE DES COMPTES DÉMO (BACKEND LOGIC ONLY) ---
+                    // Si le compte démo n'existe pas dans Firebase (error user-not-found), on le crée à la volée
+                    // Cette logique est conservée pour faciliter les tests manuels si besoin, mais l'UI est retirée.
+                    if ((loginError.code === 'auth/user-not-found' || loginError.code === 'auth/invalid-credential') && 
+                        (formData.email === 'directeur@tpa.com' || formData.email === 'obc@tpa.com')) {
+                        
+                        console.log("Compte démo introuvable, création automatique...");
+                        try {
+                            const newUserCredential = await FirebaseAuth.createUserWithEmailAndPassword(auth, formData.email, formData.password);
+                            
+                            // Définition du rôle selon l'email démo
+                            const isDirector = formData.email === 'directeur@tpa.com';
+                            const demoUser: UserType = {
+                                id: newUserCredential.user.uid,
+                                email: formData.email,
+                                username: isDirector ? 'directeur' : 'obc',
+                                nom: isDirector ? 'Général' : 'Manager',
+                                prenom: isDirector ? 'Directeur' : 'OBC',
+                                role: isDirector ? 'directeur' : 'obc',
+                                avatarUrl: ''
+                            };
+
+                            await api.createUserProfile(demoUser);
+                            onLogin(demoUser);
+                            return; // Succès après création auto
+                        } catch (createError) {
+                            console.error(createError);
+                            throw new Error("Erreur lors de la création automatique du compte démo.");
+                        }
+                    }
+                    
+                    // Erreur standard
+                    console.error("Firebase Login Error:", loginError);
+                    if (loginError.code === 'auth/invalid-credential') throw new Error("Email ou mot de passe incorrect.");
+                    if (loginError.code === 'auth/too-many-requests') throw new Error("Trop de tentatives. Veuillez patienter.");
+                    throw new Error("Erreur de connexion.");
                 }
 
             } else {
-                // --- INSCRIPTION LOCALE ---
+                // --- INSCRIPTION FIREBASE ---
                 if (!formData.name || !formData.email || !formData.password) {
                     throw new Error("Tous les champs sont requis.");
                 }
 
-                const uid = `local_${Date.now()}`;
-                
-                // Sauvegarde Auth (Email/Pass)
-                const usersStr = localStorage.getItem('db_users_auth');
-                const localUsers = usersStr ? JSON.parse(usersStr) : [];
-                
-                if (localUsers.find((u: any) => u.email === formData.email)) {
-                    throw new Error("Cet email est déjà utilisé.");
-                }
+                const userCredential = await FirebaseAuth.createUserWithEmailAndPassword(auth, formData.email, formData.password);
+                const uid = userCredential.user.uid;
 
-                localUsers.push({ id: uid, email: formData.email, password: formData.password });
-                localStorage.setItem('db_users_auth', JSON.stringify(localUsers));
-
-                // Sauvegarde Profil
                 const [prenom, ...nomParts] = formData.name.split(' ');
+                
+                // Création du profil enrichi dans Firestore
                 const newUser: UserType = {
                     id: uid,
                     email: formData.email,
                     username: formData.name.toLowerCase().replace(/\s/g, ''),
                     nom: nomParts.join(' ') || '',
                     prenom: prenom || formData.name,
-                    role: 'obc', // Par défaut
+                    role: formData.role, // Rôle sélectionné dans le formulaire
                     avatarUrl: ''
                 };
 
@@ -160,38 +150,10 @@ export const Auth = ({ onLogin }: AuthProps) => {
                         </h1>
                         <p className="text-slate-500 dark:text-slate-400 mt-2 text-sm">
                             {isLogin 
-                                ? 'Mode Local : Connectez-vous pour gérer votre flotte.' 
-                                : 'Rejoignez la plateforme locale de gestion de flotte.'}
+                                ? 'Connectez-vous pour accéder au tableau de bord.' 
+                                : 'Rejoignez la plateforme de gestion de flotte.'}
                         </p>
                     </div>
-
-                    {/* Hint Box for Demo Credentials */}
-                    {isLogin && (
-                        <div className={`bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-900/50 rounded-xl p-4 text-xs text-blue-800 dark:text-blue-300 space-y-3 transition-all ${justFilled ? 'ring-2 ring-blue-400 scale-[1.02]' : ''}`}>
-                            <div className="flex items-center justify-between font-bold">
-                                <div className="flex items-center gap-2"><Shield size={14} /> Pré-remplir (Test Local) :</div>
-                                {justFilled && <span className="flex items-center gap-1 text-green-600 dark:text-green-400"><Check size={14}/> Rempli</span>}
-                            </div>
-                            <div className="grid grid-cols-2 gap-3">
-                                <button 
-                                    type="button"
-                                    className="text-left p-2.5 bg-white dark:bg-slate-800 rounded-lg border border-blue-100 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-500 hover:shadow-sm transition-all group"
-                                    onClick={() => fillCredentials('directeur@tpa.com', 'directeur')}
-                                >
-                                    <span className="font-bold block text-slate-700 dark:text-slate-200 group-hover:text-blue-600">Directeur</span>
-                                    <span className="opacity-60 block mt-1">directeur@tpa.com</span>
-                                </button>
-                                <button 
-                                    type="button"
-                                    className="text-left p-2.5 bg-white dark:bg-slate-800 rounded-lg border border-blue-100 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-500 hover:shadow-sm transition-all group"
-                                    onClick={() => fillCredentials('obc@tpa.com', 'obc123')}
-                                >
-                                    <span className="font-bold block text-slate-700 dark:text-slate-200 group-hover:text-blue-600">Manager OBC</span>
-                                    <span className="opacity-60 block mt-1">obc@tpa.com</span>
-                                </button>
-                            </div>
-                        </div>
-                    )}
 
                     {/* Formulaire */}
                     <form onSubmit={handleSubmit} className="space-y-5 mt-4" noValidate>
@@ -210,16 +172,16 @@ export const Auth = ({ onLogin }: AuthProps) => {
                                     />
                                 </div>
                                 <div className="relative group">
-                                    <Truck className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={20} />
-                                    <input
-                                        type="text"
-                                        name="company"
-                                        placeholder="Nom de l'entreprise"
-                                        value={formData.company}
+                                    <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={20} />
+                                    <select
+                                        name="role"
+                                        value={formData.role}
                                         onChange={handleChange}
-                                        autoComplete="organization"
-                                        className="w-full pl-10 pr-4 py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all dark:text-white placeholder:text-slate-400"
-                                    />
+                                        className="w-full pl-10 pr-4 py-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all dark:text-white appearance-none cursor-pointer"
+                                    >
+                                        <option value="obc">Manager OBC</option>
+                                        <option value="directeur">Directeur</option>
+                                    </select>
                                 </div>
                             </div>
                         )}
@@ -298,7 +260,7 @@ export const Auth = ({ onLogin }: AuthProps) => {
                         <p className="text-slate-500 dark:text-slate-400 text-sm">
                             {isLogin ? "Vous n'avez pas de compte ?" : "Vous avez déjà un compte ?"}
                             <button
-                                onClick={() => { setIsLogin(!isLogin); setError(''); setFormData(prev => ({...prev, name: '', company: ''})); }}
+                                onClick={() => { setIsLogin(!isLogin); setError(''); setFormData(prev => ({...prev, name: ''})); }}
                                 className="ml-2 font-bold text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 transition-colors hover:underline focus:outline-none"
                             >
                                 {isLogin ? "Créer un compte" : "Se connecter"}
@@ -312,8 +274,8 @@ export const Auth = ({ onLogin }: AuthProps) => {
             <div className="hidden lg:flex w-1/2 relative bg-slate-900 overflow-hidden">
                 <div className="absolute inset-0 bg-gradient-to-br from-blue-600/90 to-slate-900/90 z-10 mix-blend-multiply" />
                 <img 
-                    src="https://images.unsplash.com/photo-1519003722824-194d4455a60c?q=80&w=2075&auto=format&fit=crop" 
-                    alt="Fleet Management Background" 
+                    src="https://images.unsplash.com/photo-1588615419999-7334757022db?q=80&w=1974&auto=format&fit=crop" 
+                    alt="Camion Citerne Transport Pétrolier" 
                     className="absolute inset-0 w-full h-full object-cover animate-pulse-slow"
                 />
                 
@@ -329,25 +291,10 @@ export const Auth = ({ onLogin }: AuthProps) => {
                         <h2 className="text-4xl font-bold leading-tight">
                             Transport Pétrolier Africain : <span className="text-blue-300">Excellence et Sécurité</span>.
                         </h2>
-                        <div className="space-y-4">
-                            <div className="flex items-start gap-4 p-4 bg-white/10 backdrop-blur-md rounded-2xl border border-white/10 hover:bg-white/15 transition-colors">
-                                <div className="p-2 bg-green-500/20 rounded-lg text-green-300 mt-1">
-                                    <CheckCircle size={20} />
-                                </div>
-                                <div>
-                                    <h3 className="font-bold text-lg">Mode Local (Hors-Ligne)</h3>
-                                    <p className="text-sm text-slate-200 mt-1 leading-relaxed">Cette version fonctionne sans connexion serveur. Toutes vos données sont sauvegardées localement sur votre appareil.</p>
-                                </div>
-                            </div>
-                        </div>
                     </div>
 
                     <div className="flex justify-between items-end text-sm text-slate-400 animate-fade-in" style={{ animationDelay: '0.2s' }}>
                         <p>© 2025 TPA Inc.</p>
-                        <div className="flex gap-6">
-                            <a href="#" className="hover:text-white transition-colors">Confidentialité</a>
-                            <a href="#" className="hover:text-white transition-colors">Conditions</a>
-                        </div>
                     </div>
                 </div>
             </div>

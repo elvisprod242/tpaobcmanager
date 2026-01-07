@@ -44,20 +44,24 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
 
             // Vérifier le conducteur via le rapport lié
             const report = reports.find(r => r.id === inf.rapports_id);
-            if (!report) return false; // Si pas de rapport, on ignore (sécurité)
+            // Si pas de rapport direct, on vérifie si l'infraction a été attribuée manuellement au conducteur (non supporté par le modèle actuel mais bonne pratique défensive)
+            // Ici on se base sur le lien rapport -> conducteur
+            if (!report) return false; 
             
             return report.conducteur_id === selectedDriverId;
         }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     }, [selectedDriverId, currentYear, infractions, reports]);
 
-    // 3. Calculs des points (Dynamique via Helper)
+    // 3. Calculs des points (Dynamique via Helper Optimisé)
     const stats = useMemo(() => {
         const totalPointsStart = 12; // Permis à points classique
         
         let pointsLost = 0;
         driverInfractions.forEach(inf => {
             const severity = getInfractionSeverity(inf, reports, invariants, scpConfigs);
-            pointsLost += severity.points;
+            // On multiplie par le nombre si l'infraction a une quantité > 1 (ex: 2 excès de vitesse dans le même rapport)
+            const count = inf.nombre || 1;
+            pointsLost += (severity.points * count);
         });
 
         // Plafonner à 12 max perdus pour ne pas avoir de solde négatif absurde sans contexte
@@ -65,7 +69,7 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
 
         return {
             pointsLost,
-            remainingPoints: totalPointsStart - safePointsLost,
+            remainingPoints: Math.max(0, totalPointsStart - pointsLost), // Peut être 0
             totalInfractions: driverInfractions.length
         };
     }, [driverInfractions, reports, invariants, scpConfigs]);
@@ -130,7 +134,7 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
                                 <TrendingDown size={20} className={stats.remainingPoints < 6 ? "text-red-500" : ""} />
                             </div>
                         </div>
-                        <p className="text-4xl font-bold mt-2 text-slate-800 dark:text-white">
+                        <p className={`text-4xl font-bold mt-2 ${stats.remainingPoints === 0 ? 'text-red-600' : 'text-slate-800 dark:text-white'}`}>
                             {selectedDriverId ? stats.remainingPoints : '- / -'}
                         </p>
                     </div>
@@ -226,7 +230,8 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
                                     <th className="px-6 py-4">Date</th>
                                     <th className="px-6 py-4">Invariant Violé</th>
                                     <th className="px-6 py-4">Type Infraction</th>
-                                    <th className="px-6 py-4 text-center">Points Perdus (Est.)</th>
+                                    <th className="px-6 py-4 text-center">Qté</th>
+                                    <th className="px-6 py-4 text-center">Points Retirés</th>
                                     <th className="px-6 py-4">Sanction Appliquée</th>
                                     <th className="px-6 py-4 text-center">Statut</th>
                                 </tr>
@@ -235,6 +240,8 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
                                 {filteredInfractionsList.map(inf => {
                                     const severity = getInfractionSeverity(inf, reports, invariants, scpConfigs);
                                     const invariantTitle = getInvariantTitle(inf.rapports_id);
+                                    const count = inf.nombre || 1;
+                                    const totalPoints = severity.points * count;
                                     
                                     return (
                                         <tr key={inf.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors">
@@ -251,17 +258,17 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
                                             </td>
                                             <td className="px-6 py-4">
                                                 <div className="flex flex-col gap-1.5">
-                                                    <span className="text-slate-800 dark:text-white font-medium">
-                                                        {inf.type_infraction}
-                                                    </span>
                                                     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border w-fit ${severity.type === 'Alarme' ? 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-800' : 'bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-900/20 dark:text-orange-400 dark:border-orange-800'}`}>
                                                         {severity.type === 'Alarme' ? <AlertOctagon size={10} /> : <AlertTriangle size={10} />}
                                                         {severity.type}
                                                     </span>
                                                 </div>
                                             </td>
+                                            <td className="px-6 py-4 text-center font-medium text-slate-600 dark:text-slate-400">
+                                                {count}
+                                            </td>
                                             <td className="px-6 py-4 text-center font-bold text-red-500">
-                                                -{severity.points}
+                                                -{totalPoints} <span className="text-[10px] text-slate-400 font-normal">({severity.points}/u)</span>
                                             </td>
                                             <td className="px-6 py-4 text-slate-600 dark:text-slate-400 italic">
                                                 {inf.mesure_disciplinaire}
@@ -282,7 +289,7 @@ export const Scp = ({ selectedPartnerId, partners, globalYear, onChangeView, use
                                 })}
                                 {filteredInfractionsList.length === 0 && (
                                     <tr>
-                                        <td colSpan={6} className="px-6 py-12 text-center text-slate-500">
+                                        <td colSpan={7} className="px-6 py-12 text-center text-slate-500">
                                             Aucune infraction trouvée pour ce conducteur avec les filtres actuels.
                                         </td>
                                     </tr>

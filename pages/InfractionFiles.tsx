@@ -1,29 +1,50 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ArrowLeft, FileText, Upload, Trash2, Eye, Download, AlertTriangle, AlertOctagon, User, Calendar, FolderOpen, Image as ImageIcon, X, Loader2 } from 'lucide-react';
 import { Infraction, InfractionFile, UserRole } from '../types';
 import { mockConducteurs, mockRapports, mockInvariants, mockScpConfigurations } from '../services/mockData';
 import { getInfractionSeverity } from '../utils/helpers';
 import { Modal } from '../components/ui/Modal';
 import { storageService } from '../services/storage';
+import { api } from '../services/api';
 
 interface InfractionFilesProps {
     infractionId: string;
     infractions: Infraction[];
-    setInfractions: React.Dispatch<React.SetStateAction<Infraction[]>>;
+    setInfractions: React.Dispatch<React.SetStateAction<Infraction[]>>; // Gardé pour compat, mais moins utilisé
     onBack: () => void;
     userRole: UserRole;
 }
 
 export const InfractionFiles = ({ infractionId, infractions, setInfractions, onBack, userRole }: InfractionFilesProps) => {
-    // Dans une vraie app, on ferait un fetch ici. On simule la récupération et l'état local.
     const infraction = infractions.find(i => i.id === infractionId);
+    
+    // État local des fichiers (chargés à la demande)
+    const [files, setFiles] = useState<InfractionFile[]>([]);
+    const [isLoadingFiles, setIsLoadingFiles] = useState(true);
     
     // État pour la visualisation
     const [viewingFile, setViewingFile] = useState<InfractionFile | null>(null);
     const [isUploading, setIsUploading] = useState(false);
 
     const isReadOnly = userRole === 'directeur';
+
+    // Chargement des fichiers depuis la sous-collection
+    useEffect(() => {
+        const loadFiles = async () => {
+            if (!infractionId) return;
+            setIsLoadingFiles(true);
+            try {
+                const data = await api.getInfractionFiles(infractionId);
+                setFiles(data);
+            } catch (error) {
+                console.error("Erreur chargement fichiers:", error);
+            } finally {
+                setIsLoadingFiles(false);
+            }
+        };
+        loadFiles();
+    }, [infractionId]);
 
     if (!infraction) {
         return (
@@ -50,22 +71,24 @@ export const InfractionFiles = ({ infractionId, infractions, setInfractions, onB
             setIsUploading(true);
 
             try {
-                // Upload vers Firebase Storage
+                // 1. Upload vers le stockage (simulé Base64)
                 const url = await storageService.uploadFile(file, 'infractions');
 
+                // 2. Création de l'objet métadonnées
                 const newFile: InfractionFile = {
                     id: `file_${Date.now()}`,
                     infractions_id: infraction.id,
                     file: file.name,
-                    description: "Nouveau justificatif ajouté",
+                    description: "Justificatif ajouté",
                     url: url,
                     type: file.name.split('.').pop()?.toLowerCase() || 'unknown'
                 };
                 
-                const updatedFiles = [...(infraction.files || []), newFile];
+                // 3. Sauvegarde dans la sous-collection Firestore
+                await api.addInfractionFile(infraction.id, newFile);
                 
-                // Mise à jour via props
-                setInfractions(prev => prev.map(i => i.id === infractionId ? { ...i, files: updatedFiles } : i));
+                // 4. Mise à jour locale
+                setFiles(prev => [...prev, newFile]);
             } catch (error) {
                 console.error("Upload échoué:", error);
                 alert("Erreur lors de l'envoi du fichier.");
@@ -75,16 +98,20 @@ export const InfractionFiles = ({ infractionId, infractions, setInfractions, onB
         }
     };
 
-    const handleDeleteFile = (fileId: string) => {
-        if (window.confirm("Supprimer ce fichier ?") && infraction) {
-            const updatedFiles = (infraction.files || []).filter(f => f.id !== fileId);
-            
-            // Mise à jour via props
-            setInfractions(prev => prev.map(i => i.id === infractionId ? { ...i, files: updatedFiles } : i));
+    const handleDeleteFile = async (fileId: string) => {
+        if (window.confirm("Supprimer ce fichier définitivement ?") && infraction) {
+            try {
+                // Suppression API
+                await api.deleteInfractionFile(infraction.id, fileId);
+                // Mise à jour locale
+                setFiles(prev => prev.filter(f => f.id !== fileId));
+            } catch (error) {
+                console.error("Erreur suppression:", error);
+                alert("Impossible de supprimer le fichier.");
+            }
         }
     };
 
-    // Helper pour déterminer le type de viewer
     const isImage = (fileName: string) => {
         const ext = fileName.split('.').pop()?.toLowerCase();
         return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext || '');
@@ -163,11 +190,19 @@ export const InfractionFiles = ({ infractionId, infractions, setInfractions, onB
                     </div>
                 )}
 
+                {/* Loading Skeleton */}
+                {isLoadingFiles && (
+                    <div className="col-span-full text-center py-12 text-slate-400">
+                        <Loader2 size={32} className="animate-spin mx-auto mb-2" />
+                        Chargement des fichiers...
+                    </div>
+                )}
+
                 {/* Existing Files */}
-                {infraction.files?.map(file => {
+                {!isLoadingFiles && files.map(file => {
                     const isImg = isImage(file.file);
                     return (
-                        <div key={file.id} className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-4 flex flex-col group hover:shadow-md transition-all relative">
+                        <div key={file.id} className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-4 flex flex-col group hover:shadow-md transition-all relative animate-zoom-in">
                             <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white/80 dark:bg-slate-800/80 p-1 rounded-lg backdrop-blur-sm z-10">
                                 <button onClick={() => setViewingFile(file)} className="p-1.5 text-slate-500 hover:text-blue-600 transition-colors" title="Voir"><Eye size={16} /></button>
                                 {!isReadOnly && <button onClick={() => handleDeleteFile(file.id)} className="p-1.5 text-slate-500 hover:text-red-600 transition-colors" title="Supprimer"><Trash2 size={16} /></button>}
@@ -186,7 +221,7 @@ export const InfractionFiles = ({ infractionId, infractions, setInfractions, onB
 
                             <div className="mt-auto">
                                 <h4 className="font-semibold text-slate-800 dark:text-white truncate text-sm" title={file.file}>{file.file}</h4>
-                                <p className="text-xs text-slate-500 mt-1 truncate">{file.description || "Pas de description"}</p>
+                                <p className="text-xs text-slate-500 mt-1 truncate">{file.description || "Justificatif"}</p>
                                 <a 
                                     href={file.url} 
                                     download={file.file}
@@ -201,7 +236,7 @@ export const InfractionFiles = ({ infractionId, infractions, setInfractions, onB
                 })}
             </div>
             
-            {(!infraction.files || infraction.files.length === 0) && (
+            {!isLoadingFiles && files.length === 0 && (
                 <div className="text-center py-12">
                     <div className="inline-flex p-4 bg-slate-100 dark:bg-slate-800 rounded-full text-slate-400 mb-3">
                         <FolderOpen size={32} />
@@ -210,7 +245,7 @@ export const InfractionFiles = ({ infractionId, infractions, setInfractions, onB
                 </div>
             )}
 
-            {/* Modal de Visualisation Optimisée */}
+            {/* Modal de Visualisation */}
             <Modal 
                 isOpen={!!viewingFile} 
                 onClose={() => setViewingFile(null)} 

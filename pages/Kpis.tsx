@@ -86,18 +86,24 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear, reports, infract
         });
 
         const totalDistance = Math.round(relevantReports.reduce((acc, r) => acc + r.distance_km, 0));
+        const totalWorkHours = Math.round(relevantReports.reduce((acc, r) => acc + timeStringToHours(r.duree), 0));
         const totalDrivingHours = Math.round(relevantReports.reduce((acc, r) => acc + timeStringToHours(r.temps_conduite), 0));
         const totalRestHours = Math.round(relevantReports.reduce((acc, r) => acc + timeStringToHours(r.temps_attente), 0));
 
         const baseConduiteMensuel = 8580;
+        const baseTravailMensuel = 10500; // Objectif théorique travail
         const baseReposMensuel = 132;
         
         const objConduiteMensuel = baseConduiteMensuel * multiplier;
         const objConduiteAnnuel = (baseConduiteMensuel * 12) * multiplier;
+
+        const objTravailMensuel = baseTravailMensuel * multiplier;
+        const objTravailAnnuel = (baseTravailMensuel * 12) * multiplier;
         
         const objReposMensuel = baseReposMensuel * multiplier;
         const objReposAnnuel = (baseReposMensuel * 12) * multiplier;
 
+        // Ligne Kms parcourus
         rows.push({
             id: 'fixed_kms',
             label: 'Kms parcourus',
@@ -109,6 +115,19 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear, reports, infract
             isFixed: true
         });
 
+        // Ligne Temps de travail (Nouvelle)
+        rows.push({
+            id: 'fixed_travail',
+            label: 'Temps de travail',
+            valeur: totalWorkHours,
+            objectif: `${objTravailMensuel.toLocaleString('fr-FR')} h/max`,
+            objectif_annuel: `${objTravailAnnuel.toLocaleString('fr-FR')} h/max`,
+            commentaire: comments['fixed_travail'] || '',
+            isInvariant: false,
+            isFixed: true
+        });
+
+        // Ligne Temps de conduite
         rows.push({
             id: 'fixed_conduite',
             label: 'Temps de conduite',
@@ -120,6 +139,7 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear, reports, infract
             isFixed: true
         });
 
+        // Ligne Temps de repos
         rows.push({
             id: 'fixed_repos',
             label: 'Temps de repos',
@@ -133,47 +153,57 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear, reports, infract
 
         // --- 2. Partie Invariants (Bas du tableau - Agrégé) ---
         
-        const allUniqueTitles = Array.from(new Set(invariants.map(i => i.titre)));
+        // On récupère TOUS les titres d'invariants uniques pour afficher toutes les lignes
+        // peu importe le partenaire sélectionné.
+        const allUniqueTitles = Array.from(new Set(invariants.map(i => i.titre))).sort();
 
         allUniqueTitles.forEach(title => {
-            const matchingInvariants = invariants.filter(inv => 
-                inv.titre === title && 
-                (selectedPartnerId === 'all' || inv.partenaire_id === selectedPartnerId)
-            );
-
-            if (matchingInvariants.length === 0) return;
-
-            const matchingInvariantIds = matchingInvariants.map(inv => inv.id);
-
+            
+            // Calcul des infractions pour ce titre ET le partenaire sélectionné
             const infractionCount = infractions.filter(inf => {
                 const rDate = new Date(inf.date);
                 const matchesYear = rDate.getFullYear() === selectedYear;
                 const matchesMonth = viewPeriod === 'year' || rDate.getMonth() === parseInt(selectedMonth);
                 
+                // Filtre Partenaire Strict sur l'infraction
                 if (selectedPartnerId !== 'all' && inf.partenaire_id !== selectedPartnerId) return false;
 
+                // Vérification que l'infraction correspond au Titre de l'invariant en cours
                 const report = reports.find(r => r.id === inf.rapports_id);
-                if (report && matchingInvariantIds.includes(report.invariant_id || '')) {
-                    return matchesYear && matchesMonth;
+                // Si lié à un rapport, on vérifie l'invariant du rapport
+                if (report && report.invariant_id) {
+                    const inv = invariants.find(i => i.id === report.invariant_id);
+                    return inv && inv.titre === title && matchesYear && matchesMonth;
                 }
+                // Fallback : si pas de lien rapport, on vérifie si le titre de l'invariant correspond au type d'infraction (moins précis)
                 return false; 
             }).length;
 
+            // Calcul de l'objectif cumulé pour ce titre ET le partenaire sélectionné
             let totalCible = 0;
             let unite = '';
             
-            matchingInvariants.forEach(inv => {
-                const obj = objectives.find(o => o.invariant_id === inv.id);
-                if (obj) {
-                    totalCible += obj.cible;
-                    if (!unite && obj.unite) unite = obj.unite;
+            objectives.forEach(obj => {
+                const linkedInvariant = invariants.find(i => i.id === obj.invariant_id);
+                // On ne somme que si l'objectif concerne un invariant portant ce titre
+                if (linkedInvariant && linkedInvariant.titre === title) {
+                    // ET si l'objectif appartient au partenaire sélectionné (ou tous)
+                    if (selectedPartnerId === 'all' || obj.partenaire_id === selectedPartnerId) {
+                        totalCible += obj.cible;
+                        if (!unite && obj.unite) unite = obj.unite;
+                    }
                 }
             });
 
-            const objectifVal = `${totalCible} ${unite}`;
-            const objectifAnnuelVal = `${totalCible * 12} ${unite}`;
+            // Si aucune unité trouvée mais qu'il y a un invariant, on met une unité par défaut
+            if (!unite && totalCible > 0) unite = '';
 
-            const rowId = selectedPartnerId === 'all' ? `agg_${title.replace(/\s+/g, '_')}` : matchingInvariants[0].id;
+            const objectifVal = totalCible > 0 ? `${totalCible} ${unite}` : 'N/A';
+            const objectifAnnuelVal = totalCible > 0 ? `${totalCible * 12} ${unite}` : 'N/A';
+
+            // ID unique pour la ligne (pour les commentaires)
+            // On utilise le titre pour que le commentaire persiste même si on change de partenaire
+            const rowId = `row_${title.replace(/\s+/g, '_')}_${selectedPartnerId}`;
 
             rows.push({
                 id: rowId,
@@ -234,7 +264,7 @@ export const Kpis = ({ selectedPartnerId, partners, globalYear, reports, infract
                     String(row.commentaire || '')
                 ];
             } else {
-                const isOk = row.isInvariant ? row.valeur === 0 : true; 
+                const isOk = row.isInvariant ? Number(row.valeur) === 0 : true; 
                 return [
                     String(row.label || ''), 
                     String(row.valeur || 0), 

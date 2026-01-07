@@ -2,20 +2,23 @@
 import React, { useState, useMemo } from 'react';
 import { ArrowLeft, Save, ShieldCheck, AlertTriangle, AlertOctagon, Edit2, Search, Plus, Trash2 } from 'lucide-react';
 import { ScpConfiguration, Partenaire, Invariant, UserRole } from '../types';
-import { mockInvariants } from '../services/mockData';
 import { Modal } from '../components/ui/Modal';
-import { FormInput } from '../components/ui/FormElements';
+import { FormInput, FormSelect } from '../components/ui/FormElements';
+import { api } from '../services/api';
+import { useNotification } from '../contexts/NotificationContext';
 
 interface ScpAttributionProps {
     selectedPartnerId: string;
     partners: Partenaire[];
+    invariants: Invariant[];
     onBack: () => void;
     userRole: UserRole;
     scpConfigs: ScpConfiguration[];
     setScpConfigs: (data: ScpConfiguration[]) => void;
 }
 
-export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, scpConfigs, setScpConfigs }: ScpAttributionProps) => {
+export const ScpAttribution = ({ selectedPartnerId, partners, invariants, onBack, userRole, scpConfigs, setScpConfigs }: ScpAttributionProps) => {
+    const { addNotification } = useNotification();
     const configs = scpConfigs;
     const setConfigs = setScpConfigs;
     
@@ -33,15 +36,15 @@ export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, 
 
     const isReadOnly = userRole === 'directeur';
 
-    // 1. Filtrer les invariants pertinents (selon le partenaire sélectionné)
+    // 1. Filtrer les invariants pertinents (globaux 'all' ou spécifiques au partenaire)
     const filteredInvariants = useMemo(() => {
-        return mockInvariants.filter(inv => {
-            const matchesPartner = selectedPartnerId === 'all' || inv.partenaire_id === selectedPartnerId;
+        return invariants.filter(inv => {
+            const matchesPartner = inv.partenaire_id === 'all' || selectedPartnerId === 'all' || inv.partenaire_id === selectedPartnerId;
             const matchesSearch = inv.titre.toLowerCase().includes(filterText.toLowerCase()) || 
                                   inv.description.toLowerCase().includes(filterText.toLowerCase());
             return matchesPartner && matchesSearch;
         });
-    }, [selectedPartnerId, filterText]);
+    }, [selectedPartnerId, filterText, invariants]);
 
     const handleOpenModal = (inv: Invariant, type: 'Alerte' | 'Alarme', existingConfig?: ScpConfiguration) => {
         if (existingConfig) {
@@ -51,7 +54,8 @@ export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, 
             setEditingConfig({
                 id: `scp_conf_${Date.now()}`,
                 invariants_id: inv.id,
-                partenaire_id: inv.partenaire_id,
+                // On associe la sanction au partenaire sélectionné si possible, sinon au partenaire de l'invariant (ou 'all')
+                partenaire_id: selectedPartnerId !== 'all' ? selectedPartnerId : inv.partenaire_id,
                 sanction: '',
                 type: type,
                 value: type === 'Alarme' ? 3 : 1
@@ -60,33 +64,67 @@ export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, 
         setIsModalOpen(true);
     };
 
-    const handleDeleteConfig = (configId: string) => {
+    // Nouvelle fonction pour ouvrir le modal sans invariant pré-sélectionné (bouton "Nouvelle Config")
+    const handleOpenNewModal = () => {
+        setEditingConfig({
+            id: `scp_conf_${Date.now()}`,
+            invariants_id: '', // Vide pour forcer la sélection
+            partenaire_id: selectedPartnerId !== 'all' ? selectedPartnerId : 'all',
+            sanction: '',
+            type: 'Alerte',
+            value: 1
+        });
+        setIsModalOpen(true);
+    };
+
+    const handleDeleteConfig = async (configId: string) => {
         if (window.confirm("Supprimer cette configuration de sanction ?")) {
+            await api.deleteScpConfiguration(configId);
             setConfigs(configs.filter(c => c.id !== configId));
+            addNotification('success', 'Configuration supprimée.');
         }
     };
 
-    const handleSave = () => {
+    const handleSave = async () => {
         if (!editingConfig.invariants_id || !editingConfig.sanction) return;
 
-        // Vérifier si une config existe déjà pour cet ID d'invariant ET ce Type
-        const existsIndex = configs.findIndex(c => c.invariants_id === editingConfig.invariants_id && c.type === editingConfig.type);
-        
-        if (existsIndex >= 0) {
-            // Mise à jour de l'existante
-            const newConfigs = [...configs];
-            newConfigs[existsIndex] = { ...newConfigs[existsIndex], ...editingConfig } as ScpConfiguration;
-            setConfigs(newConfigs);
-        } else {
-            // Ajout nouvelle
-            setConfigs([...configs, editingConfig as ScpConfiguration]);
+        try {
+            // Vérifier si une config existe déjà pour cet ID d'invariant ET ce Type ET ce Partenaire
+            const existsIndex = configs.findIndex(c => c.invariants_id === editingConfig.invariants_id && c.type === editingConfig.type && c.partenaire_id === editingConfig.partenaire_id);
+            
+            const newConfig = {
+                ...editingConfig,
+                id: (existsIndex >= 0 ? configs[existsIndex].id : editingConfig.id) || `scp_conf_${Date.now()}`
+            } as ScpConfiguration;
+
+            await api.addScpConfiguration(newConfig);
+
+            if (existsIndex >= 0) {
+                // Mise à jour de l'existante
+                const newConfigs = [...configs];
+                newConfigs[existsIndex] = newConfig;
+                setConfigs(newConfigs);
+                addNotification('success', 'Configuration mise à jour.');
+            } else {
+                // Ajout nouvelle
+                setConfigs([...configs, newConfig]);
+                addNotification('success', 'Nouvelle configuration ajoutée.');
+            }
+            setIsModalOpen(false);
+        } catch (error) {
+            console.error(error);
+            addNotification('error', "Erreur lors de la sauvegarde.");
         }
-        setIsModalOpen(false);
     };
 
     const getInvariantTitle = (id: string) => {
-        return mockInvariants.find(i => i.id === id)?.titre || '';
+        return invariants.find(i => i.id === id)?.titre || '';
     };
+
+    // Options pour le selecteur d'invariants (modal création)
+    const invariantOptions = useMemo(() => {
+        return [{ value: '', label: 'Sélectionner un invariant...' }, ...filteredInvariants.map(inv => ({ value: inv.id, label: inv.titre }))];
+    }, [filteredInvariants]);
 
     return (
         <div className="space-y-6 animate-fade-in pb-8">
@@ -106,8 +144,8 @@ export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, 
                 </div>
             </div>
 
-            {/* Barre de Recherche */}
-            <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700">
+            {/* Barre de Recherche et Bouton Ajout */}
+            <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 flex flex-col md:flex-row justify-between gap-4 items-center">
                 <div className="relative w-full md:w-96">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                     <input 
@@ -118,6 +156,14 @@ export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, 
                         onChange={(e) => setFilterText(e.target.value)}
                     />
                 </div>
+                {!isReadOnly && (
+                    <button 
+                        onClick={handleOpenNewModal}
+                        className="bg-blue-600 text-white px-4 py-2.5 rounded-xl font-semibold hover:bg-blue-700 transition-colors flex items-center gap-2 shadow-md shadow-blue-900/20 active:scale-95 whitespace-nowrap w-full md:w-auto justify-center"
+                    >
+                        <Plus size={18} /> Nouvelle Configuration
+                    </button>
+                )}
             </div>
 
             {/* Tableau des Invariants et Configs */}
@@ -140,9 +186,10 @@ export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, 
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
                         {filteredInvariants.map(inv => {
-                            // Trouver les configs spécifiques pour cet invariant
-                            const configAlerte = configs.find(c => c.invariants_id === inv.id && c.type === 'Alerte');
-                            const configAlarme = configs.find(c => c.invariants_id === inv.id && c.type === 'Alarme');
+                            // Trouver les configs spécifiques pour cet invariant ET le partenaire actif (ou 'all' si global)
+                            // Priorité au partenaire sélectionné s'il existe une config spécifique
+                            const configAlerte = configs.find(c => c.invariants_id === inv.id && c.type === 'Alerte' && (selectedPartnerId === 'all' || c.partenaire_id === selectedPartnerId));
+                            const configAlarme = configs.find(c => c.invariants_id === inv.id && c.type === 'Alarme' && (selectedPartnerId === 'all' || c.partenaire_id === selectedPartnerId));
                             
                             return (
                                 <tr key={inv.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors group">
@@ -153,7 +200,10 @@ export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, 
                                                 <ShieldCheck size={18} />
                                             </div>
                                             <div>
-                                                <p className="font-bold text-slate-800 dark:text-white">{inv.titre}</p>
+                                                <div className="flex items-center gap-2">
+                                                    <p className="font-bold text-slate-800 dark:text-white">{inv.titre}</p>
+                                                    {inv.partenaire_id === 'all' && <span className="text-[9px] bg-blue-50 text-blue-600 px-1 rounded border border-blue-100 uppercase">Global</span>}
+                                                </div>
                                                 <p className="text-xs text-slate-500 dark:text-slate-400 truncate max-w-xs">{inv.description}</p>
                                             </div>
                                         </div>
@@ -226,9 +276,7 @@ export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, 
                         {filteredInvariants.length === 0 && (
                             <tr>
                                 <td colSpan={3} className="px-6 py-12 text-center text-slate-500">
-                                    {selectedPartnerId === 'all' 
-                                        ? "Veuillez sélectionner un partenaire pour configurer les sanctions." 
-                                        : "Aucun invariant trouvé pour ce partenaire."}
+                                    Aucun invariant trouvé pour les critères actuels.
                                 </td>
                             </tr>
                         )}
@@ -239,7 +287,7 @@ export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, 
             <Modal
                 isOpen={isModalOpen}
                 onClose={() => setIsModalOpen(false)}
-                title={`Configurer ${editingConfig.type} - ${getInvariantTitle(editingConfig.invariants_id || '')}`}
+                title={editingConfig.invariants_id ? `Configurer ${editingConfig.type} - ${getInvariantTitle(editingConfig.invariants_id)}` : 'Nouvelle Configuration'}
                 footer={
                     <>
                         <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg">Annuler</button>
@@ -262,14 +310,34 @@ export const ScpAttribution = ({ selectedPartnerId, partners, onBack, userRole, 
                         </div>
                     </div>
 
-                    <FormInput 
-                        label="Points Perdus (Valeur)" 
-                        type="number" 
-                        min="0"
-                        value={editingConfig.value} 
-                        onChange={(e: any) => setEditingConfig({...editingConfig, value: parseInt(e.target.value) || 0})} 
-                        disabled={isReadOnly}
-                    />
+                    {/* Sélecteur d'invariant seulement si création via bouton global */}
+                    {!editingConfig.invariants_id && (
+                        <FormSelect 
+                            label="Invariant concerné"
+                            value={editingConfig.invariants_id} 
+                            onChange={(e: any) => setEditingConfig({...editingConfig, invariants_id: e.target.value})} 
+                            options={invariantOptions}
+                            disabled={isReadOnly}
+                        />
+                    )}
+
+                    <div className="grid grid-cols-2 gap-4">
+                        <FormSelect 
+                            label="Type" 
+                            value={editingConfig.type} 
+                            onChange={(e: any) => setEditingConfig({...editingConfig, type: e.target.value})} 
+                            options={[{value: 'Alerte', label: 'Alerte'}, {value: 'Alarme', label: 'Alarme'}]}
+                            disabled={isReadOnly}
+                        />
+                        <FormInput 
+                            label="Points Perdus (Valeur)" 
+                            type="number" 
+                            min="0"
+                            value={editingConfig.value} 
+                            onChange={(e: any) => setEditingConfig({...editingConfig, value: parseInt(e.target.value) || 0})} 
+                            disabled={isReadOnly}
+                        />
+                    </div>
 
                     <FormInput 
                         label="Sanction disciplinaire par défaut" 

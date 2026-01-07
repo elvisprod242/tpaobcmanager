@@ -13,6 +13,15 @@ export interface User {
     avatarUrl?: string;
 }
 
+export interface Message {
+    id: string;
+    senderId: string;
+    receiverId: string; // 'directeur' est un ID virtuel pour le canal direction, ou l'ID spécifique user
+    content: string;
+    timestamp: string; // ISO String
+    read: boolean;
+}
+
 export interface Partenaire {
     id: string;
     nom: string;
@@ -233,5 +242,6 @@ export enum AppView {
     CABIN_CONTROL = 'CABIN_CONTROL',
     COMMUNICATION = 'COMMUNICATION',
     COMMUNICATION_DETAILS = 'COMMUNICATION_DETAILS',
-    SETTINGS = 'SETTINGS'
+    SETTINGS = 'SETTINGS',
+    CHAT = 'CHAT'
 }

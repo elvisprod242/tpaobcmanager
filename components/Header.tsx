@@ -1,7 +1,9 @@
 
-import React from 'react';
-import { Sun, Moon, Bell, Briefcase, ChevronDown, Calendar, ShieldCheck } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Sun, Moon, Bell, Briefcase, ChevronDown, Calendar, ShieldCheck, MessageCircle } from 'lucide-react';
 import { Partenaire, User } from '../types';
+import { useNotification } from '../contexts/NotificationContext';
 
 interface HeaderProps {
     title: string;
@@ -14,11 +16,13 @@ interface HeaderProps {
     selectedYear: string;
     onSelectYear: (year: string) => void;
     currentUser: User | null;
+    unreadCount?: number; // Messages chat non lus
 }
 
-export const Header = ({ title, toggleSidebar, isDarkMode, toggleTheme, partners, selectedPartnerId, onSelectPartner, selectedYear, onSelectYear, currentUser }: HeaderProps) => {
+export const Header = ({ title, toggleSidebar, isDarkMode, toggleTheme, partners, selectedPartnerId, onSelectPartner, selectedYear, onSelectYear, currentUser, unreadCount = 0 }: HeaderProps) => {
+    const navigate = useNavigate();
+    const { unreadSystemCount, clearSystemNotifications } = useNotification();
     
-    // Rôle lisible
     const getRoleLabel = () => {
         if (!currentUser) return '';
         switch (currentUser.role) {
@@ -28,6 +32,16 @@ export const Header = ({ title, toggleSidebar, isDarkMode, toggleTheme, partners
             default: return 'Utilisateur';
         }
     };
+
+    // Génération dynamique des années (Année actuelle + 1 jusqu'à 2020)
+    const availableYears = useMemo(() => {
+        const currentYear = new Date().getFullYear();
+        const years = [];
+        for (let i = currentYear + 1; i >= 2020; i--) {
+            years.push(i);
+        }
+        return years;
+    }, []);
 
     return (
         <header className="sticky top-0 z-30 glass border-b border-slate-200/60 dark:border-slate-800/60 px-4 md:px-8 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all duration-300">
@@ -39,6 +53,24 @@ export const Header = ({ title, toggleSidebar, isDarkMode, toggleTheme, partners
                 
                 {/* Mobile Actions */}
                 <div className="flex items-center gap-2 md:hidden">
+                    <button 
+                        onClick={() => navigate('/chat')}
+                        className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-all text-slate-600 dark:text-slate-300 active:scale-90 relative"
+                    >
+                        <MessageCircle size={20} />
+                        {unreadCount > 0 && (
+                            <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border border-white dark:border-slate-900"></span>
+                        )}
+                    </button>
+                    <button 
+                        onClick={clearSystemNotifications}
+                        className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-all text-slate-600 dark:text-slate-300 active:scale-90 relative"
+                    >
+                        <Bell size={20} />
+                        {unreadSystemCount > 0 && (
+                            <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-amber-500 rounded-full border border-white dark:border-slate-900"></span>
+                        )}
+                    </button>
                     <button 
                         onClick={toggleTheme} 
                         className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-all text-slate-600 dark:text-slate-300 active:scale-90"
@@ -82,10 +114,10 @@ export const Header = ({ title, toggleSidebar, isDarkMode, toggleTheme, partners
                             onChange={(e) => onSelectYear(e.target.value)}
                             className="appearance-none pl-10 pr-8 py-2.5 w-full bg-slate-50/50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 hover:bg-white dark:hover:bg-slate-700 hover:shadow-md transition-all cursor-pointer font-medium"
                         >
-                            <option value="">Années</option>
-                            <option value="2025">2025</option>
-                            <option value="2024">2024</option>
-                            <option value="2023">2023</option>
+                            <option value="">Année</option>
+                            {availableYears.map(year => (
+                                <option key={year} value={year.toString()}>{year}</option>
+                            ))}
                         </select>
                         <div className="absolute inset-y-0 right-0 pr-2 flex items-center pointer-events-none">
                             <ChevronDown size={16} className="text-slate-400" />
@@ -95,9 +127,28 @@ export const Header = ({ title, toggleSidebar, isDarkMode, toggleTheme, partners
 
                 {/* Desktop Actions */}
                 <div className="hidden md:flex items-center gap-3">
-                    <button className="p-2.5 rounded-full hover:bg-white dark:hover:bg-slate-800 hover:shadow-sm text-slate-500 dark:text-slate-400 transition-all duration-300 relative group active:scale-95">
-                        <Bell size={20} className="group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors" />
-                        <span className="absolute top-2 right-2.5 w-2 h-2 bg-red-500 rounded-full border-2 border-slate-50 dark:border-slate-900"></span>
+                    <button 
+                        onClick={() => navigate('/chat')}
+                        className="p-2.5 rounded-full hover:bg-white dark:hover:bg-slate-800 hover:shadow-sm text-slate-500 dark:text-slate-400 transition-all duration-300 relative group active:scale-95"
+                        title="Messagerie"
+                    >
+                        <MessageCircle size={20} className="group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors" />
+                        {unreadCount > 0 && (
+                            <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white dark:border-slate-900 animate-pulse"></span>
+                        )}
+                    </button>
+
+                    <button 
+                        onClick={clearSystemNotifications}
+                        className="p-2.5 rounded-full hover:bg-white dark:hover:bg-slate-800 hover:shadow-sm text-slate-500 dark:text-slate-400 transition-all duration-300 relative group active:scale-95"
+                        title="Notifications Système"
+                    >
+                        <Bell size={20} className="group-hover:text-amber-500 dark:group-hover:text-amber-400 transition-colors" />
+                        {unreadSystemCount > 0 && (
+                            <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-amber-500 rounded-full text-[10px] text-white flex items-center justify-center font-bold border-2 border-white dark:border-slate-900 animate-bounce-short">
+                                {unreadSystemCount > 9 ? '9+' : unreadSystemCount}
+                            </span>
+                        )}
                     </button>
                     <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-1"></div>
                     <button 
@@ -118,7 +169,11 @@ export const Header = ({ title, toggleSidebar, isDarkMode, toggleTheme, partners
                             </p>
                         </div>
                         <div className={`h-10 w-10 rounded-full flex items-center justify-center text-white font-bold text-sm shadow-md ring-2 ring-white dark:ring-slate-900 group-hover:ring-blue-200 dark:group-hover:ring-blue-900 transition-all ${currentUser?.role === 'directeur' ? 'bg-gradient-to-tr from-emerald-500 to-teal-600' : 'bg-gradient-to-tr from-blue-500 to-indigo-600'}`}>
-                            {currentUser ? `${currentUser.prenom[0]}${currentUser.nom[0]}` : 'U'}
+                            {currentUser?.avatarUrl ? (
+                                <img src={currentUser.avatarUrl} alt="Avatar" className="w-full h-full rounded-full object-cover" />
+                            ) : (
+                                <span>{currentUser ? `${currentUser.prenom[0]}${currentUser.nom[0]}` : 'U'}</span>
+                            )}
                         </div>
                     </div>
                 </div>

@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Search, Plus, Trash2, Edit2, CheckSquare, Square, Briefcase, Save, AlertTriangle, Loader2 } from 'lucide-react';
 import { Partenaire, UserRole } from '../types';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
@@ -21,7 +21,23 @@ export const Partners = ({ partners, setPartners, userRole }: { partners: Parten
     // État Suppression
     const [deleteAction, setDeleteAction] = useState<{ type: 'single' | 'bulk', id?: string } | null>(null);
 
-    const [viewMode, setViewMode] = useState<ViewMode>('grid');
+    // Initialisation : Liste pour Tablette/PC (>= 768px), Grille pour Mobile
+    const [viewMode, setViewMode] = useState<ViewMode>(() => window.innerWidth >= 768 ? 'list' : 'grid');
+    
+    // Écouteur de redimensionnement pour adapter la vue dynamiquement
+    useEffect(() => {
+        const handleResize = () => {
+            if (window.innerWidth >= 768) {
+                setViewMode('list');
+            } else {
+                setViewMode('grid');
+            }
+        };
+        
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
+
     const [filter, setFilter] = useState('');
     const [selectedPartners, setSelectedPartners] = useState<Set<string>>(new Set());
 

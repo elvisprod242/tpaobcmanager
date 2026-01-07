@@ -1,10 +1,11 @@
-
-import React, { useState, useMemo } from 'react';
-import { Search, Plus, Trash2, Edit2, CheckSquare, Square, Key, Copy, User, Link, Unlink, CheckCircle, AlertTriangle } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Search, Plus, Trash2, Edit2, CheckSquare, Square, Key, Copy, User, Link, Unlink, CheckCircle, AlertTriangle, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { CleObc, Partenaire, Conducteur, UserRole } from '../types';
 import { ViewModeToggle, ViewMode } from '../components/ui/ViewModeToggle';
 import { Modal } from '../components/ui/Modal';
 import { FormInput, FormSelect } from '../components/ui/FormElements';
+import { api } from '../services/api';
+import { useNotification } from '../contexts/NotificationContext';
 
 interface ObcKeysProps {
     selectedPartnerId: string;
@@ -17,10 +18,13 @@ interface ObcKeysProps {
 }
 
 export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, setDrivers, userRole }: ObcKeysProps) => {
+    const { addNotification } = useNotification();
+    
     // Modal Creation/Edit Key
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [formData, setFormData] = useState<Partial<CleObc>>({ cle_obc: '', partenaire_id: '' });
+    const [isSaving, setIsSaving] = useState(false);
     
     // Modal Assign Driver
     const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -34,9 +38,24 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
     // État Suppression
     const [deleteAction, setDeleteAction] = useState<{ type: 'single' | 'bulk', id?: string } | null>(null);
 
-    const [viewMode, setViewMode] = useState<ViewMode>('grid');
+    // Initialisation : Liste pour Tablette/PC (>= 768px), Grille pour Mobile
+    const [viewMode, setViewMode] = useState<ViewMode>(() => window.innerWidth >= 768 ? 'list' : 'grid');
+
+    // Pagination
+    const [currentPage, setCurrentPage] = useState(1);
+    const [itemsPerPage, setItemsPerPage] = useState(10);
+
+    // Écouteur de redimensionnement
+    useEffect(() => {
+        const handleResize = () => {
+            if (window.innerWidth >= 768) { setViewMode('list'); } else { setViewMode('grid'); }
+        };
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
+
     const [filter, setFilter] = useState('');
-    const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+    const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set<string>());
 
     const isReadOnly = userRole === 'directeur';
 
@@ -59,51 +78,104 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
         });
     }, [keys, selectedPartnerId, filter, partners, drivers]);
 
+    // Reset page quand le filtre change
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [filter, selectedPartnerId, itemsPerPage]);
+
+    const totalPages = Math.ceil(filteredKeys.length / itemsPerPage);
+    const paginatedKeys = useMemo(() => {
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        return filteredKeys.slice(startIndex, startIndex + itemsPerPage);
+    }, [filteredKeys, currentPage, itemsPerPage]);
+
     // --- Actions CRUD Key ---
-    const handleSaveKey = () => {
+    const handleSaveKey = async () => {
         if (!formData.cle_obc || !formData.partenaire_id) return;
-        setKeys(prev => {
-            const newItem = { id: editingId || `key_${Date.now()}`, ...formData } as CleObc;
-            return editingId ? prev.map(k => k.id === editingId ? newItem : k) : [...prev, newItem];
-        });
-        setIsModalOpen(false);
+        setIsSaving(true);
+
+        try {
+            const newItem = { 
+                id: editingId || `key_${Date.now()}`, 
+                ...formData 
+            } as CleObc;
+
+            if (editingId) {
+                await api.addCleObc(newItem); // Upsert logic
+                setKeys(prev => prev.map(k => k.id === editingId ? newItem : k));
+                addNotification('success', 'Clé OBC mise à jour.');
+            } else {
+                await api.addCleObc(newItem);
+                setKeys(prev => [...prev, newItem]);
+                addNotification('success', 'Nouvelle Clé OBC ajoutée.');
+            }
+            setIsModalOpen(false);
+        } catch (error) {
+            console.error("Erreur sauvegarde clé:", error);
+            addNotification('error', "Erreur lors de la sauvegarde.");
+        } finally {
+            setIsSaving(false);
+        }
     };
 
     // --- Suppression Optimisée ---
     const requestDelete = (id: string) => setDeleteAction({ type: 'single', id });
     const requestBulkDelete = () => setDeleteAction({ type: 'bulk' });
 
-    const confirmDelete = () => {
+    const confirmDelete = async () => {
         if (!deleteAction) return;
+        setIsSaving(true);
 
-        if (deleteAction.type === 'single' && deleteAction.id) {
-            // 1. Unassign driver
-            setDrivers(prev => prev.map(d => {
-                if (d.cle_obc_ids && d.cle_obc_ids.includes(deleteAction.id!)) {
-                    return { ...d, cle_obc_ids: d.cle_obc_ids.filter(kId => kId !== deleteAction.id) };
+        try {
+            if (deleteAction.type === 'single' && deleteAction.id) {
+                // 1. Unassign driver if exists
+                const driver = getAssignedDriver(deleteAction.id);
+                if (driver && driver.cle_obc_ids) {
+                    const updatedDriver = { 
+                        ...driver, 
+                        cle_obc_ids: driver.cle_obc_ids.filter(kId => kId !== deleteAction.id) 
+                    };
+                    await api.updateConducteur(updatedDriver);
+                    setDrivers(prev => prev.map(d => d.id === driver.id ? updatedDriver : d));
                 }
-                return d;
-            }));
-            // 2. Delete key
-            setKeys(prev => prev.filter(k => k.id !== deleteAction.id));
-            
-            if (selectedKeys.has(deleteAction.id)) {
-                const newSelected = new Set(selectedKeys);
-                newSelected.delete(deleteAction.id);
-                setSelectedKeys(newSelected);
+
+                // 2. Delete key
+                await api.deleteCleObc(deleteAction.id);
+                setKeys(prev => prev.filter(k => k.id !== deleteAction.id));
+                
+                if (selectedKeys.has(deleteAction.id)) {
+                    const newSelected = new Set(selectedKeys);
+                    newSelected.delete(deleteAction.id);
+                    setSelectedKeys(newSelected);
+                }
+                addNotification('success', 'Clé supprimée.');
+
+            } else if (deleteAction.type === 'bulk') {
+                const idsToDelete = Array.from(selectedKeys) as string[];
+                
+                // Unassign drivers logic locally + API (simplified loop)
+                // Idéalement on ferait un batch update mais updateConducteur est unitaire
+                for (const keyId of idsToDelete) {
+                    const driver = getAssignedDriver(keyId);
+                    if (driver && driver.cle_obc_ids) {
+                        const updatedDriver = { ...driver, cle_obc_ids: driver.cle_obc_ids.filter(k => k !== keyId) };
+                        await api.updateConducteur(updatedDriver);
+                        setDrivers(prev => prev.map(d => d.id === driver.id ? updatedDriver : d));
+                    }
+                    await api.deleteCleObc(keyId);
+                }
+
+                setKeys(prev => prev.filter(k => !selectedKeys.has(k.id)));
+                setSelectedKeys(new Set());
+                addNotification('success', `${idsToDelete.length} clés supprimées.`);
             }
-        } else if (deleteAction.type === 'bulk') {
-            // Unassign all involved drivers
-            setDrivers(prev => prev.map(d => {
-                if (d.cle_obc_ids) {
-                    return { ...d, cle_obc_ids: d.cle_obc_ids.filter(kId => !selectedKeys.has(kId)) };
-                }
-                return d;
-            }));
-            setKeys(prev => prev.filter(k => !selectedKeys.has(k.id)));
-            setSelectedKeys(new Set());
+        } catch (error) {
+            console.error("Erreur suppression:", error);
+            addNotification('error', "Erreur lors de la suppression.");
+        } finally {
+            setIsSaving(false);
+            setDeleteAction(null);
         }
-        setDeleteAction(null);
     };
 
     // --- Actions Assignment ---
@@ -113,34 +185,39 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
         setIsAssignModalOpen(true);
     };
 
-    const handleAssignDriver = () => {
+    const handleAssignDriver = async () => {
         if (!selectedKeyForAssign || !assignDriverId) return;
+        setIsSaving(true);
 
-        const targetPartnerId = selectedKeyForAssign.partenaire_id;
-
-        setDrivers(prev => {
-            return prev.map(d => {
-                const currentKeys = d.cle_obc_ids || [];
+        try {
+            const driverToUpdate = drivers.find(d => d.id === assignDriverId);
+            if (driverToUpdate) {
+                // Retirer les clés existantes pour ce partenaire si nécessaire (1 clé / partenaire)
+                const currentKeys = driverToUpdate.cle_obc_ids || [];
+                const targetPartnerId = selectedKeyForAssign.partenaire_id;
                 
-                if (currentKeys.includes(selectedKeyForAssign.id)) {
-                    if (d.id !== assignDriverId) {
-                        return { ...d, cle_obc_ids: currentKeys.filter(k => k !== selectedKeyForAssign.id) };
-                    }
-                }
+                const keysWithoutTargetPartner = currentKeys.filter(kId => {
+                    const keyObj = keys.find(k => k.id === kId);
+                    return keyObj && keyObj.partenaire_id !== targetPartnerId;
+                });
 
-                if (d.id === assignDriverId) {
-                    const keysWithoutTargetPartner = currentKeys.filter(kId => {
-                        const keyObj = keys.find(k => k.id === kId);
-                        return keyObj && keyObj.partenaire_id !== targetPartnerId;
-                    });
-                    return { ...d, cle_obc_ids: [...keysWithoutTargetPartner, selectedKeyForAssign.id] };
-                }
-                return d;
-            });
-        });
+                const updatedDriver = { 
+                    ...driverToUpdate, 
+                    cle_obc_ids: [...keysWithoutTargetPartner, selectedKeyForAssign.id] 
+                };
 
-        setIsAssignModalOpen(false);
-        setSelectedKeyForAssign(null);
+                await api.updateConducteur(updatedDriver);
+                setDrivers(prev => prev.map(d => d.id === assignDriverId ? updatedDriver : d));
+                addNotification('success', 'Conducteur assigné avec succès.');
+            }
+            setIsAssignModalOpen(false);
+            setSelectedKeyForAssign(null);
+        } catch (error) {
+            console.error("Erreur assignation:", error);
+            addNotification('error', "Erreur lors de l'assignation.");
+        } finally {
+            setIsSaving(false);
+        }
     };
 
     // --- Actions Unassignment (Optimised) ---
@@ -152,16 +229,27 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
         }
     };
 
-    const confirmUnassign = () => {
+    const confirmUnassign = async () => {
         if (unassignTarget) {
-            setDrivers(prev => prev.map(d => {
-                if (d.id === unassignTarget.driver.id && d.cle_obc_ids) {
-                    return { ...d, cle_obc_ids: d.cle_obc_ids.filter(kId => !selectedKeys.has(kId) && kId !== unassignTarget.key.id) };
-                }
-                return d;
-            }));
-            setIsUnassignModalOpen(false);
-            setUnassignTarget(null);
+            setIsSaving(true);
+            try {
+                const updatedDriver = {
+                    ...unassignTarget.driver,
+                    cle_obc_ids: (unassignTarget.driver.cle_obc_ids || []).filter(kId => kId !== unassignTarget.key.id)
+                };
+                
+                await api.updateConducteur(updatedDriver);
+                setDrivers(prev => prev.map(d => d.id === updatedDriver.id ? updatedDriver : d));
+                
+                addNotification('success', 'Conducteur dissocié.');
+                setIsUnassignModalOpen(false);
+                setUnassignTarget(null);
+            } catch (error) {
+                console.error("Erreur dissociation:", error);
+                addNotification('error', "Erreur lors de la dissociation.");
+            } finally {
+                setIsSaving(false);
+            }
         }
     };
 
@@ -182,8 +270,8 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
 
     // --- Selection ---
     const handleSelectAll = () => {
-        if (selectedKeys.size === filteredKeys.length) setSelectedKeys(new Set());
-        else setSelectedKeys(new Set(filteredKeys.map(k => k.id)));
+        if (selectedKeys.size === paginatedKeys.length) setSelectedKeys(new Set());
+        else setSelectedKeys(new Set(paginatedKeys.map(k => k.id)));
     };
 
     const toggleSelect = (id: string) => {
@@ -199,10 +287,11 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
         setIsModalOpen(true);
     };
 
-    const copyToClipboard = (text: string) => { navigator.clipboard.writeText(text); };
+    const copyToClipboard = (text: string) => { navigator.clipboard.writeText(text); addNotification('info', 'Clé copiée !', 2000); };
 
     return (
         <div className="space-y-6 animate-fade-in pb-8">
+             {/* ... Header et Filtres (Identiques mais avec gestion loading si besoin) ... */}
              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="relative w-full sm:w-auto flex-1 max-w-md group">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors" size={18} />
@@ -214,11 +303,25 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
                         onChange={(e) => setFilter(e.target.value)}
                     />
                 </div>
-                <div className="flex gap-3">
-                     <ViewModeToggle mode={viewMode} setMode={setViewMode} />
-                    {!isReadOnly && (
-                        <button onClick={() => handleOpenModal()} className="bg-blue-600 text-white px-4 py-2.5 rounded-xl font-semibold hover:bg-blue-700 transition-colors flex items-center gap-2 shadow-md shadow-blue-900/20 active:scale-95"><Plus size={18} strokeWidth={2.5} /> Nouvelle Clé</button>
-                    )}
+                
+                <div className="flex flex-col sm:flex-row gap-3">
+                    <div className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2.5 text-slate-700 dark:text-slate-300 shadow-sm">
+                        <span className="text-sm text-slate-500 whitespace-nowrap hidden sm:inline">Lignes:</span>
+                        <select className="text-sm bg-transparent border-none focus:ring-0 cursor-pointer outline-none dark:bg-slate-800 dark:text-white font-medium" value={itemsPerPage} onChange={(e) => setItemsPerPage(Number(e.target.value))}>
+                            <option value={10}>10</option>
+                            <option value={20}>20</option>
+                            <option value={30}>30</option>
+                            <option value={50}>50</option>
+                            <option value={100}>100</option>
+                        </select>
+                    </div>
+
+                    <div className="flex gap-3">
+                         <ViewModeToggle mode={viewMode} setMode={setViewMode} />
+                        {!isReadOnly && (
+                            <button onClick={() => handleOpenModal()} className="bg-blue-600 text-white px-4 py-2.5 rounded-xl font-semibold hover:bg-blue-700 transition-colors flex items-center gap-2 shadow-md shadow-blue-900/20 active:scale-95 whitespace-nowrap"><Plus size={18} strokeWidth={2.5} /> Nouvelle Clé</button>
+                        )}
+                    </div>
                 </div>
             </div>
             
@@ -238,7 +341,7 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
                             <tr>
                                 <th className="px-6 py-4 w-12">
                                      <button onClick={handleSelectAll} className="text-slate-400 hover:text-blue-600 transition-colors">
-                                        {selectedKeys.size > 0 && selectedKeys.size === filteredKeys.length ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}
+                                        {selectedKeys.size > 0 && selectedKeys.size === paginatedKeys.length ? <CheckSquare size={18} className="text-blue-600" /> : <Square size={18} />}
                                     </button>
                                 </th>
                                 <th className="px-6 py-4">Clé OBC</th>
@@ -248,7 +351,7 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                            {filteredKeys.map(k => {
+                            {paginatedKeys.map(k => {
                                 const isSelected = selectedKeys.has(k.id);
                                 const assignedDriver = getAssignedDriver(k.id);
                                 return (
@@ -319,7 +422,7 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
                 </div>
             ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                    {filteredKeys.map(k => {
+                    {paginatedKeys.map(k => {
                         const isSelected = selectedKeys.has(k.id);
                         const assignedDriver = getAssignedDriver(k.id);
                         return (
@@ -384,21 +487,47 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
                 </div>
             )}
 
+            {/* Footer Pagination */}
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mt-4 px-2">
+                <span className="text-sm text-slate-500 dark:text-slate-400">
+                    Affichage de <span className="font-semibold">{paginatedKeys.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0}</span> à <span className="font-semibold">{Math.min(currentPage * itemsPerPage, filteredKeys.length)}</span> sur <span className="font-semibold">{filteredKeys.length}</span> résultats
+                </span>
+                <div className="flex items-center gap-2">
+                    <button 
+                        disabled={currentPage === 1} 
+                        onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                        className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    >
+                        <ChevronLeft size={18} />
+                    </button>
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-300 px-2">Page {currentPage} / {totalPages || 1}</span>
+                    <button 
+                        disabled={currentPage >= totalPages} 
+                        onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                        className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                    >
+                        <ChevronRight size={18} />
+                    </button>
+                </div>
+            </div>
+
              {/* Modal Création/Edition Clé */}
              <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingId ? 'Modifier Clé' : 'Nouvelle Clé'} footer={
                  <>
                     <button onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors">Annuler</button>
-                    <button onClick={handleSaveKey} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Enregistrer</button>
+                    <button onClick={handleSaveKey} disabled={isSaving} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 disabled:opacity-70">
+                        {isSaving && <Loader2 size={16} className="animate-spin" />} Enregistrer
+                    </button>
                  </>
              }>
                  <div className="space-y-4">
-                     <FormInput label="Clé OBC" value={formData.cle_obc} onChange={(e: any) => setFormData({...formData, cle_obc: e.target.value})} placeholder="Ex: 123-ABC-456" />
+                     <FormInput label="Clé OBC" value={formData.cle_obc} onChange={(e: any) => setFormData({...formData, cle_obc: e.target.value})} placeholder="Ex: 123-ABC-456" disabled={isSaving} />
                      <FormSelect 
                         label="Partenaire associé" 
                         value={formData.partenaire_id} 
                         onChange={(e: any) => setFormData({...formData, partenaire_id: e.target.value})} 
                         options={[{value: '', label: 'Sélectionner...'}, ...partners.map(p => ({value: p.id, label: p.nom}))]}
-                        disabled={selectedPartnerId !== 'all' && !editingId} 
+                        disabled={(selectedPartnerId !== 'all' && !editingId) || isSaving} 
                      />
                  </div>
              </Modal>
@@ -411,7 +540,9 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
                 footer={
                     <>
                        <button onClick={() => setIsAssignModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors">Annuler</button>
-                       <button onClick={handleAssignDriver} disabled={!assignDriverId} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">Valider l'assignation</button>
+                       <button onClick={handleAssignDriver} disabled={!assignDriverId || isSaving} className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
+                           {isSaving && <Loader2 size={16} className="animate-spin" />} Valider l'assignation
+                       </button>
                     </>
                 }
             >
@@ -435,6 +566,7 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
                             {value: '', label: 'Sélectionner un conducteur...'},
                             ...availableDriversForAssign.map(d => ({ value: d.id, label: `${d.nom} ${d.prenom}` }))
                         ]}
+                        disabled={isSaving}
                     />
                     
                     <p className="text-sm text-slate-500 bg-slate-50 dark:bg-slate-800 p-3 rounded-lg border border-slate-100 dark:border-slate-700 italic">
@@ -451,8 +583,9 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
                 footer={
                     <>
                         <button onClick={() => setIsUnassignModalOpen(false)} className="px-4 py-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors">Annuler</button>
-                        <button onClick={confirmUnassign} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2 transition-colors">
-                            <Unlink size={16} /> Confirmer la dissociation
+                        <button onClick={confirmUnassign} disabled={isSaving} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2 transition-colors disabled:opacity-70">
+                            {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Unlink size={16} />} 
+                            Confirmer la dissociation
                         </button>
                     </>
                 }
@@ -493,8 +626,9 @@ export const ObcKeys = ({ selectedPartnerId, partners, keys, setKeys, drivers, s
                 footer={
                     <>
                         <button onClick={() => setDeleteAction(null)} className="flex-1 px-4 py-2.5 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl font-semibold">Annuler</button>
-                        <button onClick={confirmDelete} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2">
-                            <Trash2 size={18} /> Confirmer
+                        <button onClick={confirmDelete} disabled={isSaving} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 font-semibold shadow-lg shadow-red-900/20 flex items-center justify-center gap-2 disabled:opacity-70">
+                            {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />} 
+                            Confirmer
                         </button>
                     </>
                 }

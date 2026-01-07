@@ -5,6 +5,7 @@ import { FormInput } from '../components/ui/FormElements';
 import { User } from '../types';
 import { storageService } from '../services/storage';
 import { api } from '../services/api';
+import { auth, db } from '../services/firebase'; // Import Firebase instances
 
 interface SettingsProps {
     isDarkMode: boolean;
